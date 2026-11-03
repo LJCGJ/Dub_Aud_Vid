@@ -1,4 +1,4 @@
-# dub
+# Dub_Aud_Vid
 
 Dublagem automática de vídeos com IA, 100% local. Recebe um vídeo (arquivo ou
 URL do YouTube) em inglês e devolve o mesmo vídeo com uma faixa de áudio em
@@ -51,6 +51,11 @@ atrás dos mesmos traits, e a CLI passa a tentar nativa → Python.
 ## Instalação
 
 Requisitos: Rust 1.75+, Python 3.10+, ffmpeg no PATH.
+
+> **Máquina com Smart App Control / WDAC** (comum em PC corporativo): o cargo
+> não consegue executar os build scripts que compila (`Acesso negado (os error 5)`)
+> e nenhum `.exe` não assinado roda. Não há contorno local — compile em um PC
+> sem essa política.
 
 ```bash
 # 1. Build
@@ -130,4 +135,3 @@ registre em `registry.py` e implemente os métodos do protocolo
 ## Licença
 
 MIT. Modelos de terceiros têm licenças próprias (XTTS v2: CPML, não comercial).
-# Dub_Aud_Vid
