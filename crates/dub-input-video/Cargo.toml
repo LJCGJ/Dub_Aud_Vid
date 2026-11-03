@@ -1,0 +1,14 @@
+[package]
+name = "dub-input-video"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Adaptador de entrada/saída para vídeos locais e do YouTube"
+
+[dependencies]
+dub-core.workspace = true
+dub-media.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+tracing.workspace = true

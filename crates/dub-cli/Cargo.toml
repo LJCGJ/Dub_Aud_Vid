@@ -1,0 +1,25 @@
+[package]
+name = "dub-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Linha de comando do dub"
+
+[[bin]]
+name = "dub"
+path = "src/main.rs"
+
+[dependencies]
+dub-core.workspace = true
+dub-media.workspace = true
+dub-engines-py.workspace = true
+dub-input-video.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+indicatif.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+crossbeam-channel.workspace = true
+serde.workspace = true
+serde_json.workspace = true

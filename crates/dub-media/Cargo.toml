@@ -1,0 +1,16 @@
+[package]
+name = "dub-media"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Entrada/saída de mídia via ffmpeg e yt-dlp: extração, time-stretch, remux"
+
+[dependencies]
+dub-core.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+which.workspace = true
+tempfile.workspace = true

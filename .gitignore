@@ -1,0 +1,9 @@
+/target
+/dub_work
+py/.venv
+py/**/__pycache__
+py/*.egg-info
+*.wav
+*.mp4
+!tests/fixtures/*.mp4
+.DS_Store

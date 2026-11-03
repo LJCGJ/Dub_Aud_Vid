@@ -1,0 +1,17 @@
+[package]
+name = "dub-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Núcleo do pipeline de dublagem: tipos, traits de engines, backend e orquestração"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+crossbeam-channel.workspace = true
+hound.workspace = true
+which.workspace = true
