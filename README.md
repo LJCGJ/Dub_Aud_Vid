@@ -6,8 +6,9 @@ PT-BR — voz dublada por cima da trilha original, áudio original mantido como
 segunda faixa e legenda embutida, como no YouTube.
 
 ```
-dub video "https://www.youtube.com/watch?v=..." --tts kokoro --voice pf_dora
-dub video aula.mp4 --tts piper --voice vozes/pt_BR-faber-medium.onnx
+dub video "https://www.youtube.com/watch?v=..."              # whisper.cpp + Piper nativos, voz pt_BR-faber-medium
+dub video aula.mp4 --whisper-model large-v3 --voice pt_BR-edresson-low
+dub video aula.mp4 --tts kokoro --voice pf_dora                 # TTS via Python
 dub doctor
 ```
 
@@ -39,18 +40,30 @@ dub doctor
 | `dub-media` | Rust | ffmpeg/ffprobe/yt-dlp: extração, atempo, remux |
 | `dub-engines-py` | Rust | Sobe engines Python como processos e fala JSON-lines com elas |
 | `dub-input-video` | Rust | Adaptador vídeo/YouTube (`prepare` → pipeline → `finish`) |
-| `dub-cli` | Rust | Comando `dub` |
+| `dub-native` | Rust + C++ | Engines nativas: WSOLA (C++ via `cxx`), whisper.cpp (`whisper-rs`), Piper via ONNX Runtime + espeak-ng |
+| `dub-cli` | Rust | Comando `dub`; tenta engine nativa → cai para Python |
 | `py/dub_engines` | Python | Engines: faster-whisper, Marian/NLLB, Piper, Kokoro, XTTS, Demucs, pyannote |
-| `native/` | C++ | (Parte 2) motores nativos via `cxx`: whisper.cpp, CTranslate2, sherpa-onnx, time-stretch |
+| `native/timestretch` | C++ | Time-stretch WSOLA (preserva o tom), usado pelo `dub-native` |
 
-O core em Rust **não depende de Python** para compilar ou rodar. Python é um
-*plugin de engine* atrás dos traits `Transcriber`, `Translator`, `Synthesizer`,
-`Separator` e `Diarizer`; na Parte 2 as implementações nativas em C++ entram
-atrás dos mesmos traits, e a CLI passa a tentar nativa → Python.
+O core em Rust **não depende de Python** para compilar ou rodar. Toda engine
+fica atrás dos traits `Transcriber`, `Translator`, `Synthesizer`, `Separator` e
+`Diarizer`. A CLI resolve cada papel assim:
+
+| Papel | Nativa (Rust/C++) | Python (fallback) |
+|---|---|---|
+| Transcrição | whisper.cpp (modelo ggml) | faster-whisper |
+| Tradução | — (Parte 2b: CTranslate2) | Marian / NLLB |
+| Síntese | Piper via ONNX Runtime | Piper / Kokoro / XTTS |
+| Separação voz/fundo | — (Parte 2b: demucs.cpp) | Demucs |
+| Diarização | — (Parte 2b: sherpa-onnx) | pyannote |
+| Time-stretch | WSOLA em C++ | ffmpeg `atempo` (`--ffmpeg-stretch`) |
+
+`--transcriber native|python|auto` e `--tts-impl native|python|auto` forçam um lado.
 
 ## Instalação
 
-Requisitos: Rust 1.75+, Python 3.10+, ffmpeg no PATH.
+Requisitos: Rust 1.75+, **cmake + compilador C++** (Visual Studio Build Tools no
+Windows) para as engines nativas, Python 3.10+, ffmpeg no PATH.
 
 > **Máquina com Smart App Control / WDAC** (comum em PC corporativo): o cargo
 > não consegue executar os build scripts que compila (`Acesso negado (os error 5)`)
@@ -58,8 +71,12 @@ Requisitos: Rust 1.75+, Python 3.10+, ffmpeg no PATH.
 > sem essa política.
 
 ```bash
-# 1. Build
-cargo build --release
+# 1. Build (escolha o backend de GPU da máquina de build)
+cargo build --release                                   # CPU
+cargo build --release --features native-cuda            # NVIDIA (CUDA Toolkit instalado)
+cargo build --release --features native-vulkan          # AMD / Intel / NVIDIA via Vulkan SDK
+cargo build --release --features native-directml        # Piper em GPU no Windows (qualquer fabricante)
+cargo build --release --no-default-features             # sem engines nativas (só Python)
 
 # 2. Ambiente Python das engines
 cd py
@@ -82,13 +99,26 @@ Extras opcionais:
 | `diarize` | pyannote.audio | identificar falantes — exige `HF_TOKEN` e aceitar os termos do modelo no Hugging Face |
 | `clone` | coqui-tts (XTTS v2) | clonar a voz do falante original (GPU recomendada; licença não comercial) |
 
-## Pacotes de voz
+## Modelos e pacotes de voz
 
-- **Kokoro** (padrão): `--tts kokoro --voice pf_dora` (feminina) ou `pm_alex`,
-  `pm_santa` (masculinas). Baixa o modelo na primeira execução.
-- **Piper**: baixe um pacote PT-BR (`pt_BR-faber-medium.onnx` + `.json`) de
-  https://huggingface.co/rhasspy/piper-voices e passe o `.onnx` em `--voice`.
-- **XTTS** (clonagem): `--tts xtts`. Usa o próprio trecho do falante como referência.
+As engines nativas procuram arquivos em `DUB_MODELS_DIR/`, `~/.cache/dub/` e
+ao lado do executável:
+
+```
+~/.cache/dub/
+├── whisper/ggml-medium.bin            # https://huggingface.co/ggerganov/whisper.cpp
+└── voices/pt_BR-faber-medium.onnx     # https://huggingface.co/rhasspy/piper-voices
+           pt_BR-faber-medium.onnx.json
+```
+
+- **Piper** (padrão, nativo): `--voice pt_BR-faber-medium` (masc.) ou
+  `pt_BR-edresson-low`. Um pacote de voz = `.onnx` + `.onnx.json`.
+  Precisa da `onnxruntime` (DLL ao lado do exe, `DUB_ORT_LIB`, ou a do pacote
+  Python `onnxruntime`) e da pasta `espeak-ng-data` (ao lado do exe,
+  `DUB_ESPEAK_DATA`, ou a do pacote Python `piper-tts`). O `dub doctor` mostra
+  o que foi encontrado.
+- **Kokoro** (Python): `--tts kokoro --voice pf_dora` (fem.) / `pm_alex`, `pm_santa`.
+- **XTTS** (Python, clonagem): `--tts xtts`. Usa o próprio trecho do falante como referência.
 
 ## Uso
 
@@ -98,10 +128,13 @@ dub video <arquivo|url> [opções]
   --out <arquivo>          saída (padrão: <título>.dub.pt-BR.mp4)
   --from en --to pt-BR     idiomas
   --cpu                    força CPU
-  --whisper-model medium   tiny | base | small | medium | large-v3 | distil-large-v3
+  --transcriber auto       auto | native | python
+  --whisper-model medium   tiny | base | small | medium | large-v3 | caminho ggml-*.bin
   --translator marian      marian | nllb
-  --tts kokoro             piper | kokoro | xtts
-  --voice <nome|.onnx>
+  --tts piper              piper | kokoro | xtts
+  --tts-impl auto          auto | native | python (só piper)
+  --voice <nome|.onnx>     padrão: pt_BR-faber-medium
+  --ffmpeg-stretch         atempo do ffmpeg em vez do WSOLA nativo
   --no-separate            desliga demucs
   --no-diarize             desliga pyannote
   --no-original-track      não manter o áudio original
@@ -129,8 +162,9 @@ registre em `registry.py` e implemente os métodos do protocolo
 ## Roadmap
 
 - [x] **Parte 1** — core, pipeline paralelo, engines Python, CLI, adaptador vídeo/YouTube
-- [ ] **Parte 2** — engines nativas em C++ (whisper.cpp, CTranslate2, sherpa-onnx, demucs.cpp), time-stretch nativo, fallback nativo → Python, build sem Python
-- [ ] **Parte 3** — UI Tauri, gerenciador de pacotes de voz, voz por falante, adaptador GameDub, instalador Windows
+- [x] **Parte 2** — WSOLA em C++, whisper.cpp nativo, Piper nativo (ONNX Runtime + espeak-ng), fallback nativa → Python
+- [ ] **Parte 2b** — tradução nativa (CTranslate2), separação (demucs.cpp), diarização (sherpa-onnx); build 100% sem Python
+- [ ] **Parte 3** — UI Tauri, gerenciador/download de pacotes de voz, voz por falante, adaptador GameDub, instalador Windows
 
 ## Licença
 

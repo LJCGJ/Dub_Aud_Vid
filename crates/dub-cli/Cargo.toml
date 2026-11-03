@@ -10,8 +10,18 @@ description = "Linha de comando do dub"
 name = "dub"
 path = "src/main.rs"
 
+[features]
+default = ["native"]
+# Engines nativas (whisper.cpp, Piper/ONNX Runtime, WSOLA em C++). Exige cmake e um
+# compilador C++. Desligue com --no-default-features para um build só-Python.
+native = ["dep:dub-native"]
+native-cuda = ["native", "dub-native/whisper-cuda", "dub-native/ort-cuda"]
+native-vulkan = ["native", "dub-native/whisper-vulkan"]
+native-directml = ["native", "dub-native/ort-directml"]
+
 [dependencies]
 dub-core.workspace = true
+dub-native = { workspace = true, optional = true }
 dub-media.workspace = true
 dub-engines-py.workspace = true
 dub-input-video.workspace = true

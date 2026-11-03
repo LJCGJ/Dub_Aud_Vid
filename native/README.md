@@ -1,9 +1,9 @@
 # native/
 
-Código C++ próprio do projeto (Parte 2), exposto ao Rust via `cxx`:
+Código C++ próprio do projeto, exposto ao Rust via `cxx` (crate `dub-native`).
 
-- `timestretch/` — WSOLA/phase-vocoder para o time-fit sem depender do ffmpeg
-- `glue/` — adaptadores para whisper.cpp, CTranslate2, sherpa-onnx e demucs.cpp
-  onde os bindings Rust existentes não cobrirem o necessário
+- `timestretch/` — WSOLA (Waveform Similarity Overlap-Add): altera a duração
+  da fala sem mudar o tom. Usado no time-fit da dublagem. Sem dependências.
 
-Vazio na Parte 1 de propósito: todas as engines rodam via Python.
+Planejado (Parte 2b): adaptadores para CTranslate2, demucs.cpp e sherpa-onnx
+onde os bindings Rust não cobrirem o necessário.

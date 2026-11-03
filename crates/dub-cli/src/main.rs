@@ -4,11 +4,10 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use dub_core::{Backend, Lang, Pipeline, PipelineConfig, Progress, Stage};
 use dub_input_video::{VideoInput, VideoOptions};
-use dub_media::{Ffmpeg, FfmpegStretcher};
+use dub_media::Ffmpeg;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Instant;
 use tracing_subscriber::EnvFilter;
 
@@ -50,10 +49,10 @@ struct VideoArgs {
     #[arg(long)]
     cpu: bool,
 
-    /// Engine de transcrição
-    #[arg(long, default_value = "whisper")]
-    transcriber: String,
-    /// Modelo whisper: tiny, base, small, medium, large-v3, distil-large-v3
+    /// Implementação da transcrição: auto | native (whisper.cpp) | python (faster-whisper)
+    #[arg(long, default_value = "auto")]
+    transcriber: engines::Impl,
+    /// Modelo whisper: tiny, base, small, medium, large-v3 (nome ou caminho do ggml-*.bin)
     #[arg(long, default_value = "medium")]
     whisper_model: String,
     /// Engine de tradução: marian | nllb
@@ -62,11 +61,17 @@ struct VideoArgs {
     #[arg(long)]
     translator_model: Option<String>,
     /// Engine de voz: piper | kokoro | xtts
-    #[arg(long, default_value = "kokoro")]
+    #[arg(long, default_value = "piper")]
     tts: String,
-    /// Voz/pacote de voz: para piper, caminho do .onnx; para kokoro, nome (pf_dora, pm_alex)
-    #[arg(long)]
+    /// Implementação do TTS (só para piper): auto | native (ONNX Runtime) | python
+    #[arg(long, default_value = "auto")]
+    tts_impl: engines::Impl,
+    /// Voz/pacote de voz: piper → nome (pt_BR-faber-medium) ou caminho .onnx; kokoro → pf_dora, pm_alex
+    #[arg(long, default_value = "pt_BR-faber-medium")]
     voice: Option<String>,
+    /// Usa o ffmpeg (atempo) em vez do WSOLA nativo para ajustar a duração
+    #[arg(long)]
+    ffmpeg_stretch: bool,
     /// Desliga a separação voz/fundo (demucs)
     #[arg(long)]
     no_separate: bool,
@@ -129,7 +134,31 @@ fn doctor() -> Result<()> {
         "python",
         dub_engines_py::PythonEnv::discover(None).map(|p| p.interpreter.display().to_string()).map_err(|e| e.to_string()),
     );
+    doctor_native();
     Ok(())
+}
+
+#[cfg(feature = "native")]
+fn doctor_native() {
+    println!("\nEngines nativas");
+    println!("  time-stretch  ok   WSOLA (C++)");
+    let found: Vec<String> = dub_native::whisper::model_dirs().into_iter().filter(|d| d.is_dir()).map(|d| d.display().to_string()).collect();
+    println!("  whisper.cpp   ok   modelos em: {}", if found.is_empty() { "(nenhuma pasta de modelos ainda)".into() } else { found.join(", ") });
+    let ort = dub_native::piper::find_ort_lib();
+    let esp = dub_native::phonemize::find_espeak_data();
+    match (&ort, &esp) {
+        (Some(o), Some(e)) => println!("  piper (ONNX)  ok   onnxruntime: {} | espeak-ng-data: {}", o.display(), e.display()),
+        _ => println!(
+            "  piper (ONNX)  FALTA {}{}",
+            if ort.is_none() { "onnxruntime (DUB_ORT_LIB ou onnxruntime.dll ao lado do exe) " } else { "" },
+            if esp.is_none() { "espeak-ng-data (DUB_ESPEAK_DATA)" } else { "" }
+        ),
+    }
+}
+
+#[cfg(not(feature = "native"))]
+fn doctor_native() {
+    println!("\nEngines nativas: desligadas (compile com a feature 'native')");
 }
 
 fn video(a: VideoArgs) -> Result<()> {
@@ -149,20 +178,23 @@ fn video(a: VideoArgs) -> Result<()> {
     // 2. Engines ----------------------------------------------------------
     eprintln!("▶ carregando engines…");
     let choice = engines::EngineChoice {
-        transcriber: a.transcriber,
+        transcriber_impl: a.transcriber,
         whisper_model: a.whisper_model,
         translator: a.translator,
         translator_model: a.translator_model,
         tts: a.tts,
+        tts_impl: a.tts_impl,
         voice: a.voice,
         separate: !a.no_separate,
         diarize: !a.no_diarize,
         mock: a.mock,
     };
-    let engine_set = engines::build(&choice, &backend, &work_dir)?;
-    for (role, info) in engine_set.describe() {
-        eprintln!("  {role:<12} {} [{}] em {}", info.name, info.model, info.device);
+    let built = engines::build(&choice, &backend, &work_dir)?;
+    for (role, info) in built.engines.describe() {
+        let kind = if built.native_roles.contains(&role) { "nativa" } else { "python" };
+        eprintln!("  {role:<12} {} [{}] em {} ({kind})", info.name, info.model, info.device);
     }
+    let engine_set = built.engines;
 
     // 3. Pipeline ---------------------------------------------------------
     let cfg = PipelineConfig {
@@ -173,7 +205,7 @@ fn video(a: VideoArgs) -> Result<()> {
         ..Default::default()
     };
 
-    let stretcher = Arc::new(FfmpegStretcher::new(Ffmpeg::locate()?)?);
+    let stretcher = engines::default_stretcher(a.ffmpeg_stretch)?;
     let pipeline = Pipeline::new(engine_set, cfg).with_stretcher(stretcher);
 
     let (tx, rx) = crossbeam_channel::unbounded::<Progress>();
