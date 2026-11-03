@@ -7,3 +7,9 @@ rustflags = ["-C", "target-feature=+crt-static"]
 [env]
 # espeak-rs-sys lê esta variável para escolher o CRT (só tem efeito no MSVC).
 ESPEAK_STATIC_CRT = "1"
+# whisper-rs-sys repassa variáveis CMAKE_* ao CMake. Em builds de debug ele usa
+# RelWithDebInfo, cujas flags padrão trazem /MD; estas duas forçam /MT em todas
+# as configurações (CMP0091 NEW faz o CMake respeitar CMAKE_MSVC_RUNTIME_LIBRARY).
+# Ignoradas fora do MSVC.
+CMAKE_POLICY_DEFAULT_CMP0091 = "NEW"
+CMAKE_MSVC_RUNTIME_LIBRARY = "MultiThreaded"
