@@ -40,8 +40,13 @@ jobs:
       - name: Dependências Python dos testes (engine mock)
         run: python -m pip install --quiet numpy
 
-      - name: ffmpeg
+      - name: ffmpeg (Linux/Windows)
+        if: runner.os != 'macOS'
         uses: FedericoCarboni/setup-ffmpeg@v3
+
+      - name: ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
 
       - name: Verificar formatação
         run: cargo fmt --all -- --check
