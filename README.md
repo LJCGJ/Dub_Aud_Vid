@@ -1,16 +1,24 @@
 # Dub_Aud_Vid
 
+[![CI](https://github.com/LJCGJ/Dub_Aud_Vid/actions/workflows/ci.yml/badge.svg)](https://github.com/LJCGJ/Dub_Aud_Vid/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/LJCGJ/Dub_Aud_Vid?include_prereleases)](https://github.com/LJCGJ/Dub_Aud_Vid/releases)
+
 Dublagem automática de vídeos com IA, 100% local. Recebe um vídeo (arquivo ou
 URL do YouTube) em inglês e devolve o mesmo vídeo com uma faixa de áudio em
 PT-BR — voz dublada por cima da trilha original, áudio original mantido como
 segunda faixa e legenda embutida, como no YouTube.
 
 ```
-dub video "https://www.youtube.com/watch?v=..."              # whisper.cpp + Piper nativos, voz pt_BR-faber-medium
-dub video aula.mp4 --whisper-model large-v3 --voice pt_BR-edresson-low
-dub video aula.mp4 --tts kokoro --voice pf_dora                 # TTS via Python
+dub models download                                 # whisper medium + voz pt_BR-faber + tradutor en→pt (~1,8 GB)
+dub video "https://www.youtube.com/watch?v=..."     # 100% nativo: whisper.cpp → CTranslate2 → Piper → remux
+dub video aula.mp4 --whisper-model large-v3-turbo-q5_0 --voice pt_BR-edresson-low
+dub video aula.mp4 --tts kokoro --voice pf_dora     # TTS via Python (opcional)
 dub doctor
 ```
+
+**Começo rápido (Windows):** baixe o zip da [última release](https://github.com/LJCGJ/Dub_Aud_Vid/releases),
+extraia, e rode `dub.exe models download` seguido de `dub.exe video <arquivo ou URL>`.
+Não precisa de Python para o fluxo principal.
 
 ## Como funciona
 
@@ -40,7 +48,8 @@ dub doctor
 | `dub-media` | Rust | ffmpeg/ffprobe/yt-dlp: extração, atempo, remux |
 | `dub-engines-py` | Rust | Sobe engines Python como processos e fala JSON-lines com elas |
 | `dub-input-video` | Rust | Adaptador vídeo/YouTube (`prepare` → pipeline → `finish`) |
-| `dub-native` | Rust + C++ | Engines nativas: WSOLA (C++ via `cxx`), whisper.cpp (`whisper-rs`), Piper via ONNX Runtime + espeak-ng |
+| `dub-native` | Rust + C++ | Engines nativas: WSOLA (C++ via `cxx`), whisper.cpp, CTranslate2, Piper via ONNX Runtime + espeak-ng |
+| `dub-models` | Rust | Catálogo e download de modelos (`dub models`) |
 | `dub-cli` | Rust | Comando `dub`; tenta engine nativa → cai para Python |
 | `py/dub_engines` | Python | Engines: faster-whisper, Marian/NLLB, Piper, Kokoro, XTTS, Demucs, pyannote |
 | `native/timestretch` | C++ | Time-stretch WSOLA (preserva o tom), usado pelo `dub-native` |
@@ -52,13 +61,13 @@ fica atrás dos traits `Transcriber`, `Translator`, `Synthesizer`, `Separator` e
 | Papel | Nativa (Rust/C++) | Python (fallback) |
 |---|---|---|
 | Transcrição | whisper.cpp (modelo ggml) | faster-whisper |
-| Tradução | — (Parte 2b: CTranslate2) | Marian / NLLB |
+| Tradução | CTranslate2 (Marian int8) | Marian / NLLB (transformers) |
 | Síntese | Piper via ONNX Runtime | Piper / Kokoro / XTTS |
 | Separação voz/fundo | — (Parte 2b: demucs.cpp) | Demucs |
 | Diarização | — (Parte 2b: sherpa-onnx) | pyannote |
 | Time-stretch | WSOLA em C++ | ffmpeg `atempo` (`--ffmpeg-stretch`) |
 
-`--transcriber native|python|auto` e `--tts-impl native|python|auto` forçam um lado.
+`--transcriber`, `--translator` e `--tts-impl` aceitam `native | python | auto` para forçar um lado.
 
 ## Instalação
 
@@ -101,15 +110,21 @@ Extras opcionais:
 
 ## Modelos e pacotes de voz
 
-As engines nativas procuram arquivos em `DUB_MODELS_DIR/`, `~/.cache/dub/` e
-ao lado do executável:
+`dub models list` mostra o catálogo; `dub models download [nomes]` baixa para a
+primeira pasta gravável entre `DUB_MODELS_DIR`, `<exe>/models` (layout portátil
+do zip) e `~/.cache/dub` (`%LOCALAPPDATA%\dub` no Windows):
 
 ```
-~/.cache/dub/
-├── whisper/ggml-medium.bin            # https://huggingface.co/ggerganov/whisper.cpp
-└── voices/pt_BR-faber-medium.onnx     # https://huggingface.co/rhasspy/piper-voices
-           pt_BR-faber-medium.onnx.json
+models/
+├── whisper/ggml-medium.bin                       # huggingface.co/ggerganov/whisper.cpp
+├── voices/pt_BR-faber-medium.onnx(.json)         # huggingface.co/rhasspy/piper-voices
+└── translate/opus-mt-tc-big-en-pt-ct2-int8/      # release models-v1 deste repositório
 ```
+
+Os tradutores são modelos Marian do Helsinki-NLP convertidos para CTranslate2
+int8 pelo workflow `models.yml` (`scripts/convert_translator.py`) e publicados
+na release `models-v1`. Para adicionar um par de idiomas, inclua-o na matriz do
+workflow e no catálogo (`crates/dub-models/src/catalog.rs`).
 
 - **Piper** (padrão, nativo): `--voice pt_BR-faber-medium` (masc.) ou
   `pt_BR-edresson-low`. Um pacote de voz = `.onnx` + `.onnx.json`.
@@ -130,7 +145,8 @@ dub video <arquivo|url> [opções]
   --cpu                    força CPU
   --transcriber auto       auto | native | python
   --whisper-model medium   tiny | base | small | medium | large-v3 | caminho ggml-*.bin
-  --translator marian      marian | nllb
+  --translator auto        auto | native | python
+  --translator-model <x>   nativo: pasta CT2 (padrão opus-mt-tc-big-en-pt-ct2-int8); python: marian | nllb
   --tts piper              piper | kokoro | xtts
   --tts-impl auto          auto | native | python (só piper)
   --voice <nome|.onnx>     padrão: pt_BR-faber-medium
@@ -151,9 +167,15 @@ fundo separados, cada segmento sintetizado, `dub.srt`, `dub_mix.wav`).
 
 ```bash
 cargo test --workspace        # inclui teste ponta a ponta com engines mock em Python
-cargo clippy --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all
 dub video teste.mp4 --mock    # roda o pipeline inteiro com engines falsas, sem modelos
 ```
+
+CI (`.github/workflows/ci.yml`) roda testes, clippy e um smoke test da CLI em
+Linux, Windows e macOS a cada push. `git tag v0.1.0 && git push --tags` dispara
+`release.yml`, que publica zips por plataforma com `dub`, `onnxruntime` e
+`espeak-ng-data`.
 
 Para adicionar uma engine Python: crie a classe em `py/dub_engines/engines/`,
 registre em `registry.py` e implemente os métodos do protocolo
@@ -163,8 +185,9 @@ registre em `registry.py` e implemente os métodos do protocolo
 
 - [x] **Parte 1** — core, pipeline paralelo, engines Python, CLI, adaptador vídeo/YouTube
 - [x] **Parte 2** — WSOLA em C++, whisper.cpp nativo, Piper nativo (ONNX Runtime + espeak-ng), fallback nativa → Python
-- [ ] **Parte 2b** — tradução nativa (CTranslate2), separação (demucs.cpp), diarização (sherpa-onnx); build 100% sem Python
-- [ ] **Parte 3** — UI Tauri, gerenciador/download de pacotes de voz, voz por falante, adaptador GameDub, instalador Windows
+- [x] **Parte 2b** — tradução nativa (CTranslate2), `dub models`, CI em 3 SOs, releases por tag, workflow de conversão de modelos. Fluxo principal 100% sem Python
+- [ ] **Parte 3** — UI Tauri, voz por falante, adaptador GameDub, instalador Windows
+- [ ] **Depois** — separação (demucs.cpp) e diarização (sherpa-onnx) nativas
 
 ## Licença
 

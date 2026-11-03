@@ -1,4 +1,5 @@
 mod engines;
+mod models_cmd;
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
@@ -27,6 +28,8 @@ enum Cmd {
     Video(Box<VideoArgs>),
     /// Mostra o hardware detectado e as ferramentas encontradas
     Doctor,
+    /// Lista e baixa modelos (whisper, vozes, tradutores)
+    Models(models_cmd::ModelsArgs),
 }
 
 #[derive(Args)]
@@ -55,9 +58,10 @@ struct VideoArgs {
     /// Modelo whisper: tiny, base, small, medium, large-v3 (nome ou caminho do ggml-*.bin)
     #[arg(long, default_value = "medium")]
     whisper_model: String,
-    /// Engine de tradução: marian | nllb
-    #[arg(long, default_value = "marian")]
-    translator: String,
+    /// Implementação da tradução: auto | native (CTranslate2) | python (marian/nllb via transformers)
+    #[arg(long, default_value = "auto")]
+    translator: engines::Impl,
+    /// Modelo de tradução: nativo → pasta CT2 (padrão opus-mt-tc-big-en-pt-ct2-int8); python → marian | nllb
     #[arg(long)]
     translator_model: Option<String>,
     /// Engine de voz: piper | kokoro | xtts
@@ -110,6 +114,7 @@ fn main() -> Result<()> {
 
     match cli.cmd {
         Cmd::Doctor => doctor(),
+        Cmd::Models(args) => models_cmd::run(args),
         Cmd::Video(args) => video(*args),
     }
 }
@@ -135,6 +140,21 @@ fn doctor() -> Result<()> {
         dub_engines_py::PythonEnv::discover(None).map(|p| p.interpreter.display().to_string()).map_err(|e| e.to_string()),
     );
     doctor_native();
+    println!("\nModelos");
+    for (kind, entries) in dub_models::download::summary() {
+        let installed: Vec<String> = entries
+            .iter()
+            .filter_map(|(m, st)| match st {
+                dub_models::InstallStatus::Installed(_) => Some(m.name.clone()),
+                _ => None,
+            })
+            .collect();
+        println!(
+            "  {:<10} {}",
+            kind.to_string(),
+            if installed.is_empty() { "(nenhum) — rode: dub models download".to_string() } else { installed.join(", ") }
+        );
+    }
     Ok(())
 }
 
@@ -142,8 +162,12 @@ fn doctor() -> Result<()> {
 fn doctor_native() {
     println!("\nEngines nativas");
     println!("  time-stretch  ok   WSOLA (C++)");
-    let found: Vec<String> = dub_native::whisper::model_dirs().into_iter().filter(|d| d.is_dir()).map(|d| d.display().to_string()).collect();
-    println!("  whisper.cpp   ok   modelos em: {}", if found.is_empty() { "(nenhuma pasta de modelos ainda)".into() } else { found.join(", ") });
+    let found: Vec<String> =
+        dub_native::whisper::model_dirs().into_iter().filter(|d| d.is_dir()).map(|d| d.display().to_string()).collect();
+    println!(
+        "  whisper.cpp   ok   modelos em: {}",
+        if found.is_empty() { "(nenhuma pasta de modelos ainda)".into() } else { found.join(", ") }
+    );
     let ort = dub_native::piper::find_ort_lib();
     let esp = dub_native::phonemize::find_espeak_data();
     match (&ort, &esp) {
@@ -164,7 +188,11 @@ fn doctor_native() {
 fn video(a: VideoArgs) -> Result<()> {
     let started = Instant::now();
     let backend = if a.cpu { Backend::cpu_only() } else { Backend::detect() };
-    eprintln!("▶ dispositivo: {}{}", backend.preferred, backend.gpu_name.as_deref().map(|g| format!(" ({g})")).unwrap_or_default());
+    eprintln!(
+        "▶ dispositivo: {}{}",
+        backend.preferred,
+        backend.gpu_name.as_deref().map(|g| format!(" ({g})")).unwrap_or_default()
+    );
 
     // 1. Entrada ----------------------------------------------------------
     let tmp_work = a.work_dir.clone().unwrap_or_else(|| PathBuf::from("dub_work").join("_tmp"));
@@ -180,7 +208,7 @@ fn video(a: VideoArgs) -> Result<()> {
     let choice = engines::EngineChoice {
         transcriber_impl: a.transcriber,
         whisper_model: a.whisper_model,
-        translator: a.translator,
+        translator_impl: a.translator,
         translator_model: a.translator_model,
         tts: a.tts,
         tts_impl: a.tts_impl,

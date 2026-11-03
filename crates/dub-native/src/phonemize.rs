@@ -61,7 +61,11 @@ fn python_piper_data() -> Option<PathBuf> {
         .output()
         .ok()?;
     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if s.is_empty() { None } else { Some(PathBuf::from(s)) }
+    if s.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(s))
+    }
 }
 
 fn init() -> Result<&'static Mutex<EspeakState>> {
@@ -84,7 +88,10 @@ fn init() -> Result<&'static Mutex<EspeakState>> {
         )
     };
     if rc < 0 {
-        return Err(DubError::EngineUnavailable { engine: "espeak-ng".into(), reason: format!("espeak_Initialize retornou {rc}") });
+        return Err(DubError::EngineUnavailable {
+            engine: "espeak-ng".into(),
+            reason: format!("espeak_Initialize retornou {rc}"),
+        });
     }
     Ok(ESPEAK.get_or_init(|| Mutex::new(EspeakState { current_voice: None })))
 }
@@ -203,7 +210,11 @@ fn strip_lang_switches(s: &str) -> String {
 
 /// Converte fonemas em ids do modelo, intercalando PAD como o Piper faz:
 /// `^ _ p1 _ p2 _ ... $`.
-pub fn phonemes_to_ids(phonemes: &[char], id_map: &std::collections::HashMap<String, Vec<i64>>, phoneme_map: &std::collections::HashMap<String, Vec<String>>) -> Vec<i64> {
+pub fn phonemes_to_ids(
+    phonemes: &[char],
+    id_map: &std::collections::HashMap<String, Vec<i64>>,
+    phoneme_map: &std::collections::HashMap<String, Vec<String>>,
+) -> Vec<i64> {
     let get = |k: &str| id_map.get(k).cloned().unwrap_or_default();
     let pad = get("_");
     let mut ids = Vec::with_capacity(phonemes.len() * 2 + 3);

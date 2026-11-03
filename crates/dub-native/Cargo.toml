@@ -8,7 +8,7 @@ description = "Engines nativas (Rust + C++): time-stretch WSOLA, whisper.cpp, Pi
 build = "build.rs"
 
 [features]
-default = ["whisper", "piper"]
+default = ["whisper", "piper", "translate"]
 # Transcrição com whisper.cpp (vendorizado pelo whisper-rs; compila com cmake).
 whisper = ["dep:whisper-rs"]
 # Aceleração do whisper.cpp — escolha UMA conforme a máquina de build.
@@ -21,6 +21,9 @@ piper = ["dep:ort", "dep:espeak-rs-sys", "dep:unicode-normalization"]
 # Execution providers do ONNX Runtime (exigem a build correspondente da onnxruntime.dll).
 ort-cuda = ["piper", "ort/cuda"]
 ort-directml = ["piper", "ort/directml"]
+# Tradução com CTranslate2 (compila a lib C++; ~5 min na primeira vez).
+translate = ["dep:ct2rs"]
+ct2-cuda = ["translate", "ct2rs/cuda"]
 
 [dependencies]
 dub-core.workspace = true
@@ -34,6 +37,7 @@ whisper-rs = { version = "0.14", optional = true }
 ort = { version = "=2.0.0-rc.15", default-features = false, features = ["load-dynamic", "std"], optional = true }
 espeak-rs-sys = { version = "0.2", optional = true }
 unicode-normalization = { version = "0.1", optional = true }
+ct2rs = { version = "0.10", default-features = false, features = ["ruy", "sentencepiece"], optional = true }
 
 [build-dependencies]
 cxx-build = "1"

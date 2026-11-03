@@ -3,7 +3,7 @@
 //! desligada), cai para a engine **Python**. O usuário pode forçar uma delas.
 
 use anyhow::{anyhow, Context, Result};
-use dub_core::{Backend, Device, EngineSet, Synthesizer, Transcriber};
+use dub_core::{Backend, Device, EngineSet, Synthesizer, Transcriber, Translator};
 use dub_engines_py::{PyDiarizer, PySeparator, PySpec, PySynthesizer, PyTranscriber, PyTranslator, PythonEnv};
 use std::path::Path;
 use std::sync::Arc;
@@ -34,7 +34,7 @@ impl std::str::FromStr for Impl {
 pub struct EngineChoice {
     pub transcriber_impl: Impl,
     pub whisper_model: String,
-    pub translator: String,
+    pub translator_impl: Impl,
     pub translator_model: Option<String>,
     pub tts: String,
     pub tts_impl: Impl,
@@ -83,8 +83,11 @@ pub fn build(choice: &EngineChoice, backend: &Backend, work_dir: &Path) -> Resul
     let py_transcriber = |py_env: &mut Option<PythonEnv>| -> Result<Arc<dyn Transcriber>> {
         let env = py(py_env)?;
         Ok(Arc::new(
-            PyTranscriber::spawn(&env, PySpec::new("whisper").model(&choice.whisper_model).device(gpu).threads(backend.cpu_threads))
-                .context("engine de transcrição faster-whisper")?,
+            PyTranscriber::spawn(
+                &env,
+                PySpec::new("whisper").model(&choice.whisper_model).device(gpu).threads(backend.cpu_threads),
+            )
+            .context("engine de transcrição faster-whisper")?,
         ))
     };
     let transcriber: Arc<dyn Transcriber> = match choice.transcriber_impl {
@@ -106,14 +109,40 @@ pub fn build(choice: &EngineChoice, backend: &Backend, work_dir: &Path) -> Resul
         },
     };
 
-    // --- Tradução (Python por enquanto; CTranslate2 nativo na Parte 2b) ------
+    // --- Tradução ----------------------------------------------------------
     // Fica na CPU de propósito para rodar em paralelo com a síntese na GPU.
-    let env = py(&mut py_env)?;
-    let mut tr_spec = PySpec::new(&choice.translator).device(Device::Cpu).threads(cpu_threads);
-    if let Some(m) = &choice.translator_model {
-        tr_spec = tr_spec.model(m);
-    }
-    let translator = PyTranslator::spawn(&env, tr_spec).with_context(|| format!("engine de tradução '{}'", choice.translator))?;
+    let py_translator = |py_env: &mut Option<PythonEnv>| -> Result<Arc<dyn Translator>> {
+        let env = py(py_env)?;
+        let engine = match choice.translator_model.as_deref() {
+            Some("nllb") => "nllb",
+            Some("marian") | None => "marian",
+            Some(other) if other.contains('/') => "marian", // id do Hugging Face → Marian com modelo custom
+            Some(_) => "marian",
+        };
+        let mut spec = PySpec::new(engine).device(Device::Cpu).threads(cpu_threads);
+        if let Some(m) = choice.translator_model.as_deref().filter(|m| m.contains('/')) {
+            spec = spec.model(m);
+        }
+        Ok(Arc::new(PyTranslator::spawn(&env, spec).with_context(|| format!("engine de tradução '{engine}'"))?))
+    };
+    let translator: Arc<dyn Translator> = match choice.translator_impl {
+        Impl::Python => py_translator(&mut py_env)?,
+        Impl::Native => native_translator(choice, cpu_threads)
+            .context("tradução nativa (CTranslate2)")?
+            .ok_or_else(|| anyhow!("tradução nativa indisponível: compile com a feature 'native'"))
+            .inspect(|_| native_roles.push("translator"))?,
+        Impl::Auto => match native_translator(choice, cpu_threads) {
+            Ok(Some(t)) => {
+                native_roles.push("translator");
+                t
+            }
+            Ok(None) => py_translator(&mut py_env)?,
+            Err(e) => {
+                info!("CTranslate2 indisponível ({e}); usando transformers em Python");
+                py_translator(&mut py_env)?
+            }
+        },
+    };
 
     // --- Síntese -----------------------------------------------------------
     let synthesizer: Arc<dyn Synthesizer> = if choice.tts == "piper" {
@@ -141,7 +170,7 @@ pub fn build(choice: &EngineChoice, backend: &Backend, work_dir: &Path) -> Resul
 
     // --- Opcionais: falha neles não derruba o trabalho, só avisa -----------
     let separator = if choice.separate {
-        match PySeparator::spawn(&env, PySpec::new("demucs").device(gpu)) {
+        match py(&mut py_env).and_then(|env| PySeparator::spawn(&env, PySpec::new("demucs").device(gpu)).map_err(Into::into)) {
             Ok(s) => Some(Arc::new(s) as Arc<dyn dub_core::Separator>),
             Err(e) => {
                 warn!("separação desligada: {e}");
@@ -152,7 +181,7 @@ pub fn build(choice: &EngineChoice, backend: &Backend, work_dir: &Path) -> Resul
         None
     };
     let diarizer = if choice.diarize {
-        match PyDiarizer::spawn(&env, PySpec::new("pyannote").device(gpu)) {
+        match py(&mut py_env).and_then(|env| PyDiarizer::spawn(&env, PySpec::new("pyannote").device(gpu)).map_err(Into::into)) {
             Ok(d) => Some(Arc::new(d) as Arc<dyn dub_core::Diarizer>),
             Err(e) => {
                 warn!("diarização desligada: {e}");
@@ -163,7 +192,7 @@ pub fn build(choice: &EngineChoice, backend: &Backend, work_dir: &Path) -> Resul
         None
     };
 
-    Ok(Built { engines: EngineSet { transcriber, translator: Arc::new(translator), synthesizer, separator, diarizer }, native_roles })
+    Ok(Built { engines: EngineSet { transcriber, translator, synthesizer, separator, diarizer }, native_roles })
 }
 
 fn python_tts(env: &PythonEnv, choice: &EngineChoice, gpu: Device, work_dir: &Path) -> Result<Arc<dyn Synthesizer>> {
@@ -173,7 +202,10 @@ fn python_tts(env: &PythonEnv, choice: &EngineChoice, gpu: Device, work_dir: &Pa
         (_, Some(v)) => spec = spec.model(v),
         _ => {}
     }
-    Ok(Arc::new(PySynthesizer::spawn(env, spec, &work_dir.join("tts_tmp")).with_context(|| format!("engine de síntese '{}'", choice.tts))?))
+    Ok(Arc::new(
+        PySynthesizer::spawn(env, spec, &work_dir.join("tts_tmp"))
+            .with_context(|| format!("engine de síntese '{}'", choice.tts))?,
+    ))
 }
 
 // --- nativas (compiladas só com a feature `native`) ------------------------------
@@ -186,6 +218,25 @@ fn native_transcriber(choice: &EngineChoice, gpu: Device, threads: usize) -> Res
 
 #[cfg(not(feature = "native"))]
 fn native_transcriber(_: &EngineChoice, _: Device, _: usize) -> Result<Option<Arc<dyn Transcriber>>> {
+    Ok(None)
+}
+
+pub const DEFAULT_CT2_MODEL: &str = "opus-mt-tc-big-en-pt-ct2-int8";
+
+#[cfg(feature = "native")]
+fn native_translator(choice: &EngineChoice, threads: usize) -> Result<Option<Arc<dyn Translator>>> {
+    let model = match choice.translator_model.as_deref() {
+        // Nomes das engines Python não são modelos CT2: deixa o fallback decidir.
+        None | Some("marian") => DEFAULT_CT2_MODEL,
+        Some("nllb") => return Err(anyhow!("nllb só existe na engine Python")),
+        Some(m) => m,
+    };
+    let t = dub_native::Ct2Translator::load(model, Device::Cpu, threads)?;
+    Ok(Some(Arc::new(t)))
+}
+
+#[cfg(not(feature = "native"))]
+fn native_translator(_: &EngineChoice, _: usize) -> Result<Option<Arc<dyn Translator>>> {
     Ok(None)
 }
 

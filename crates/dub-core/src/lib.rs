@@ -13,6 +13,7 @@ pub mod audio;
 pub mod backend;
 pub mod engines;
 pub mod error;
+pub mod paths;
 pub mod pipeline;
 pub mod segment;
 pub mod timing;

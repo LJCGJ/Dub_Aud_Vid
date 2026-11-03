@@ -41,7 +41,8 @@ impl Engine for PyTranscriber {
 }
 impl Transcriber for PyTranscriber {
     fn transcribe(&self, audio: &Path, lang_hint: Option<&Lang>) -> Result<Vec<Segment>> {
-        let out: TranscribeOut = self.0.call("transcribe", json!({ "audio": abs(audio), "lang": lang_hint.map(|l| l.0.clone()) }))?;
+        let out: TranscribeOut =
+            self.0.call("transcribe", json!({ "audio": abs(audio), "lang": lang_hint.map(|l| l.0.clone()) }))?;
         Ok(out.segments.into_iter().enumerate().map(|(i, s)| Segment::new(i, s.start, s.end, s.text)).collect())
     }
 }
@@ -187,10 +188,8 @@ impl Engine for PyDiarizer {
 }
 impl Diarizer for PyDiarizer {
     fn diarize(&self, audio: &Path, segments: Vec<Segment>) -> Result<Vec<Segment>> {
-        let input: Vec<_> = segments
-            .iter()
-            .map(|s| json!({ "index": s.index, "start": s.start, "end": s.end, "text": s.source_text }))
-            .collect();
+        let input: Vec<_> =
+            segments.iter().map(|s| json!({ "index": s.index, "start": s.start, "end": s.end, "text": s.source_text })).collect();
         let out: DiarizeOut = self.proc.call("diarize", json!({ "audio": abs(audio), "segments": input }))?;
         if let Ok(mut w) = self.speakers.write() {
             *w = out.speakers.into_iter().map(Speaker).collect();

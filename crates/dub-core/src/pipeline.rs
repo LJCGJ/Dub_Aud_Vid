@@ -321,11 +321,7 @@ impl Pipeline {
                         };
                         // Primeira estimativa de velocidade: proporção de caracteres
                         // (barato e já evita um segundo passe de TTS na maioria dos casos).
-                        let speed_hint = if pass_speed {
-                            estimate_speed(&seg.source_text, &text, &cfg_s.timing)
-                        } else {
-                            1.0
-                        };
+                        let speed_hint = if pass_speed { estimate_speed(&seg.source_text, &text, &cfg_s.timing) } else { 1.0 };
                         let audio = synthesizer.synthesize(&text, &cfg_s.target_lang, ref_path.as_deref(), speed_hint)?;
                         let p = synth_dir.join(format!("seg_{:05}.wav", seg.index));
                         audio.write_wav(&p)?;
@@ -403,11 +399,8 @@ impl Pipeline {
 
         for (i, (seg, plan)) in segments.iter().zip(&plans).enumerate() {
             self.check_cancel()?;
-            let a = if (plan.speed - 1.0).abs() > 0.01 {
-                self.stretcher.stretch(&dubbed[i], plan.speed)?
-            } else {
-                dubbed[i].clone()
-            };
+            let a =
+                if (plan.speed - 1.0).abs() > 0.01 { self.stretcher.stretch(&dubbed[i], plan.speed)? } else { dubbed[i].clone() };
             if plan.overflow > 0.3 {
                 warn!(index = seg.index, overflow = plan.overflow, "dublagem transborda além da janela");
             }
@@ -529,13 +522,8 @@ mod tests {
         AudioBuffer::silence(16000, 4.0).write_wav(&src).unwrap();
 
         let f = Arc::new(Fake);
-        let engines = EngineSet {
-            transcriber: f.clone(),
-            translator: f.clone(),
-            synthesizer: f.clone(),
-            separator: None,
-            diarizer: None,
-        };
+        let engines =
+            EngineSet { transcriber: f.clone(), translator: f.clone(), synthesizer: f.clone(), separator: None, diarizer: None };
         let cfg = PipelineConfig { sample_rate: 16000, ..Default::default() };
         let (tx, rx) = crossbeam_channel::unbounded();
         let out = Pipeline::new(engines, cfg).run(&DubJob { audio: src, work_dir: dir.clone() }, Some(tx)).unwrap();

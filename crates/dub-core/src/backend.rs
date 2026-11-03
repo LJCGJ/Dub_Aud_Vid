@@ -133,10 +133,7 @@ impl Backend {
 
 fn probe_nvidia() -> Option<String> {
     // nvidia-smi é a forma mais confiável e barata de saber se há driver NVIDIA.
-    let out = std::process::Command::new("nvidia-smi")
-        .args(["--query-gpu=name", "--format=csv,noheader"])
-        .output()
-        .ok()?;
+    let out = std::process::Command::new("nvidia-smi").args(["--query-gpu=name", "--format=csv,noheader"]).output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -158,9 +155,7 @@ fn probe_directml() -> bool {
 
 fn probe_vulkan() -> bool {
     if cfg!(target_os = "windows") {
-        std::env::var("SystemRoot")
-            .map(|r| Path::new(&r).join("System32").join("vulkan-1.dll").exists())
-            .unwrap_or(false)
+        std::env::var("SystemRoot").map(|r| Path::new(&r).join("System32").join("vulkan-1.dll").exists()).unwrap_or(false)
     } else if cfg!(target_os = "linux") {
         ["/usr/lib/x86_64-linux-gnu/libvulkan.so.1", "/usr/lib64/libvulkan.so.1", "/usr/lib/libvulkan.so.1"]
             .iter()

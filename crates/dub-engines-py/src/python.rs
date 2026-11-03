@@ -25,7 +25,8 @@ impl PythonEnv {
         if let Some(p) = std::env::var_os("DUB_PYTHON") {
             return Ok(Self { interpreter: PathBuf::from(p), package_dir });
         }
-        let venv_bin = if cfg!(windows) { package_dir.join(".venv/Scripts/python.exe") } else { package_dir.join(".venv/bin/python") };
+        let venv_bin =
+            if cfg!(windows) { package_dir.join(".venv/Scripts/python.exe") } else { package_dir.join(".venv/bin/python") };
         if venv_bin.exists() {
             return Ok(Self { interpreter: venv_bin, package_dir });
         }

@@ -37,10 +37,9 @@ impl AudioBuffer {
         let channels = spec.channels.max(1) as usize;
 
         let interleaved: Vec<f32> = match spec.sample_format {
-            hound::SampleFormat::Float => reader
-                .samples::<f32>()
-                .collect::<std::result::Result<_, _>>()
-                .map_err(|e| DubError::Audio(e.to_string()))?,
+            hound::SampleFormat::Float => {
+                reader.samples::<f32>().collect::<std::result::Result<_, _>>().map_err(|e| DubError::Audio(e.to_string()))?
+            }
             hound::SampleFormat::Int => {
                 let max = ((1u64 << (spec.bits_per_sample - 1)) - 1) as f32;
                 reader
@@ -54,10 +53,7 @@ impl AudioBuffer {
         let samples = if channels == 1 {
             interleaved
         } else {
-            interleaved
-                .chunks(channels)
-                .map(|frame| frame.iter().sum::<f32>() / channels as f32)
-                .collect()
+            interleaved.chunks(channels).map(|frame| frame.iter().sum::<f32>() / channels as f32).collect()
         };
 
         Ok(Self { sample_rate: spec.sample_rate, samples })

@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "app/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # whisper.cpp e espeak-ng são compilados via cmake; o cache evita refazer isso a cada push.
+          shared-key: ${{ matrix.os }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Dependências Python dos testes (engine mock)
+        run: python -m pip install --quiet numpy
+
+      - name: ffmpeg
+        uses: FedericoCarboni/setup-ffmpeg@v3
+
+      - name: Verificar formatação
+        run: cargo fmt --all -- --check
+        continue-on-error: true
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Testes
+        env:
+          DUB_PYTHON: python
+        run: cargo test --workspace
+
+      - name: Build release (sanidade)
+        run: cargo build --release -p dub-cli
+
+      - name: Smoke test da CLI (pipeline com engines mock)
+        shell: bash
+        env:
+          DUB_PYTHON: python
+        run: |
+          ffmpeg -y -hide_banner -loglevel error \
+            -f lavfi -i "testsrc=duration=6:size=320x240:rate=15" \
+            -f lavfi -i "sine=frequency=440:duration=6" \
+            -c:v libx264 -preset ultrafast -c:a aac -shortest smoke.mp4
+          ./target/release/dub doctor
+          ./target/release/dub video smoke.mp4 --mock --out smoke.dub.mp4 --work-dir smoke_work
+          test -f smoke.dub.mp4 && test -f smoke_work/dub.srt
+
+  python-only:
+    name: build sem engines nativas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: python-only
+      - run: cargo build -p dub-cli --no-default-features

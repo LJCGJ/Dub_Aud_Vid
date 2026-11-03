@@ -153,10 +153,9 @@ impl PyProcess {
                 reason: ready.error.unwrap_or_else(|| "erro desconhecido ao carregar".into()),
             });
         }
-        let info = ready.info.ok_or_else(|| DubError::EngineUnavailable {
-            engine: spec.engine.clone(),
-            reason: "ready sem info".into(),
-        })?;
+        let info = ready
+            .info
+            .ok_or_else(|| DubError::EngineUnavailable { engine: spec.engine.clone(), reason: "ready sem info".into() })?;
         info!(engine = %info.name, model = %info.model, device = %info.device, "engine pronta");
 
         Ok(Self { child: Mutex::new(child), io: Mutex::new(io), next_id: AtomicU64::new(1), info, spec })
@@ -174,14 +173,18 @@ impl PyProcess {
 
         let mut line = serde_json::to_string(&req)?;
         line.push('\n');
-        io.stdin.write_all(line.as_bytes()).and_then(|_| io.stdin.flush()).map_err(|e| self.failed(method, format!("escrever stdin: {e}")))?;
+        io.stdin
+            .write_all(line.as_bytes())
+            .and_then(|_| io.stdin.flush())
+            .map_err(|e| self.failed(method, format!("escrever stdin: {e}")))?;
 
         let mut buf = String::new();
         let n = io.stdout.read_line(&mut buf).map_err(|e| self.failed(method, format!("ler stdout: {e}")))?;
         if n == 0 {
             return Err(self.failed(method, "processo Python encerrou".into()));
         }
-        let resp: Response = serde_json::from_str(&buf).map_err(|e| self.failed(method, format!("resposta inválida: {e} — {}", buf.trim())))?;
+        let resp: Response =
+            serde_json::from_str(&buf).map_err(|e| self.failed(method, format!("resposta inválida: {e} — {}", buf.trim())))?;
         if let Some(err) = resp.error {
             return Err(self.failed(method, err));
         }

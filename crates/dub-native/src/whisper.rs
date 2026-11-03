@@ -40,7 +40,9 @@ impl WhisperTranscriber {
             engine: "whisper.cpp".into(),
             reason: format!("{e} ({})", path.display()),
         })?;
-        let state = ctx.create_state().map_err(|e| DubError::EngineUnavailable { engine: "whisper.cpp".into(), reason: e.to_string() })?;
+        let state = ctx
+            .create_state()
+            .map_err(|e| DubError::EngineUnavailable { engine: "whisper.cpp".into(), reason: e.to_string() })?;
 
         let model_name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| model.to_string());
         Ok(Self { ctx, state: Mutex::new(state), model_name, device, threads: threads.max(1) })
@@ -75,9 +77,6 @@ impl Transcriber for WhisperTranscriber {
         params.set_suppress_nst(true);
         // Sem contexto entre janelas: evita repetições em loop em vídeos longos.
         params.set_no_context(true);
-        // Segmentos curtos (≈ uma frase) dão time-fit melhor do que blocos de 30 s.
-        params.set_max_len(90);
-        params.set_split_on_word(true);
         let lang_str = lang_hint.map(|l| l.base().to_string());
         params.set_language(lang_str.as_deref());
 
@@ -101,7 +100,7 @@ impl Transcriber for WhisperTranscriber {
             out.push(Segment::new(out.len(), t0, t1, text));
         }
         let _ = &self.ctx;
-        Ok(merge_tiny(out))
+        Ok(split_long(merge_tiny(out), 6.0))
     }
 }
 
@@ -113,7 +112,7 @@ pub fn effective_device(requested: Device) -> Device {
         Device::Metal if cfg!(feature = "whisper-metal") => Device::Metal,
         _ => {
             if requested.is_gpu() {
-                warn!(%requested, "whisper.cpp compilado sem esse backend de GPU; usando CPU (features: whisper-cuda / whisper-vulkan)");
+                info!(%requested, "whisper.cpp compilado sem esse backend de GPU; usando CPU (features: whisper-cuda / whisper-vulkan)");
             }
             Device::Cpu
         }
@@ -127,7 +126,9 @@ fn wf(message: String) -> DubError {
 /// Whisper emite marcadores como "[MUSIC]", "(applause)", "♪" em trechos sem fala.
 fn is_noise_marker(t: &str) -> bool {
     let s = t.trim();
-    (s.starts_with('[') && s.ends_with(']')) || (s.starts_with('(') && s.ends_with(')')) || s.chars().all(|c| !c.is_alphanumeric())
+    (s.starts_with('[') && s.ends_with(']'))
+        || (s.starts_with('(') && s.ends_with(')'))
+        || s.chars().all(|c| !c.is_alphanumeric())
 }
 
 /// Junta segmentos muito curtos (< 0,6 s) ao anterior — poucas palavras isoladas
@@ -147,6 +148,54 @@ fn merge_tiny(segs: Vec<Segment>) -> Vec<Segment> {
     }
     for (i, s) in out.iter_mut().enumerate() {
         s.index = i;
+    }
+    out
+}
+
+/// Divide segmentos longos (> `max_secs`) em sentenças, na pontuação final,
+/// repartindo o tempo proporcionalmente ao número de caracteres. Segmentos de
+/// uma frase dão time-fit e dublagem muito melhores do que blocos de 20–30 s.
+fn split_long(segs: Vec<Segment>, max_secs: f64) -> Vec<Segment> {
+    let mut out: Vec<Segment> = Vec::with_capacity(segs.len());
+    for s in segs {
+        if s.duration() <= max_secs {
+            out.push(s);
+            continue;
+        }
+        let sentences = split_sentences(&s.source_text);
+        if sentences.len() < 2 {
+            out.push(s);
+            continue;
+        }
+        let total_chars: usize = sentences.iter().map(|t| t.chars().count()).sum::<usize>().max(1);
+        let mut t = s.start;
+        for (i, sent) in sentences.iter().enumerate() {
+            let frac = sent.chars().count() as f64 / total_chars as f64;
+            let end = if i + 1 == sentences.len() { s.end } else { t + s.duration() * frac };
+            out.push(Segment::new(0, t, end, sent.clone()));
+            t = end;
+        }
+    }
+    for (i, s) in out.iter_mut().enumerate() {
+        s.index = i;
+    }
+    out
+}
+
+fn split_sentences(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let chars: Vec<char> = text.chars().collect();
+    for (i, &c) in chars.iter().enumerate() {
+        cur.push(c);
+        let is_end = matches!(c, '.' | '!' | '?') && chars.get(i + 1).map(|n| n.is_whitespace()).unwrap_or(true);
+        if is_end && cur.trim().chars().count() > 12 {
+            out.push(cur.trim().to_string());
+            cur.clear();
+        }
+    }
+    if !cur.trim().is_empty() {
+        out.push(cur.trim().to_string());
     }
     out
 }
@@ -171,21 +220,9 @@ fn to_16k(a: &AudioBuffer) -> Vec<f32> {
         .collect()
 }
 
-/// Diretórios onde procurar modelos, em ordem.
+/// Diretórios onde procurar modelos ggml (ver `dub_core::paths`).
 pub fn model_dirs() -> Vec<PathBuf> {
-    let mut v = Vec::new();
-    if let Some(d) = std::env::var_os("DUB_MODELS_DIR") {
-        v.push(PathBuf::from(d).join("whisper"));
-    }
-    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
-        v.push(PathBuf::from(home).join(".cache").join("dub").join("whisper"));
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            v.push(dir.join("models").join("whisper"));
-        }
-    }
-    v
+    dub_core::paths::model_dirs(dub_core::paths::ModelKind::Whisper)
 }
 
 fn resolve_model(model: &str) -> Result<PathBuf> {
@@ -230,6 +267,17 @@ mod tests {
         assert_eq!(m.len(), 2);
         assert_eq!(m[0].source_text, "Hello there");
         assert_eq!(m[1].index, 1);
+    }
+
+    #[test]
+    fn splits_long_segment_by_sentence() {
+        let v = vec![Segment::new(0, 0.0, 20.0, "First sentence is here. Second one follows it! Third one ends?")];
+        let r = split_long(v, 12.0);
+        assert_eq!(r.len(), 3);
+        assert_eq!(r[0].start, 0.0);
+        assert_eq!(r[2].end, 20.0);
+        assert!(r[0].end > 5.0 && r[0].end < 9.0, "{}", r[0].end);
+        assert_eq!(r[1].index, 1);
     }
 
     #[test]

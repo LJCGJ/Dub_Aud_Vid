@@ -7,6 +7,7 @@ members = [
     "crates/dub-input-video",
     "crates/dub-cli",
     "crates/dub-native",
+    "crates/dub-models",
 ]
 
 [workspace.package]
@@ -36,6 +37,7 @@ dub-media = { path = "crates/dub-media" }
 dub-engines-py = { path = "crates/dub-engines-py" }
 dub-input-video = { path = "crates/dub-input-video" }
 dub-native = { path = "crates/dub-native" }
+dub-models = { path = "crates/dub-models" }
 
 [profile.release]
 lto = "thin"

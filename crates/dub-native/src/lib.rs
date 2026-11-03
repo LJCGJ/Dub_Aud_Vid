@@ -5,6 +5,7 @@
 //! - [`NativeStretcher`] — time-stretch WSOLA em C++ (`native/timestretch`), sempre disponível.
 //! - [`WhisperTranscriber`] — whisper.cpp via `whisper-rs` (feature `whisper`).
 //! - [`PiperSynthesizer`] — Piper (VITS) via ONNX Runtime + espeak-ng (feature `piper`).
+//! - [`Ct2Translator`] — Marian/OPUS-MT via CTranslate2 (feature `translate`).
 //!
 //! GPU: whisper.cpp usa o backend escolhido em tempo de compilação
 //! (`whisper-cuda` / `whisper-vulkan` / `whisper-metal`); o ONNX Runtime é
@@ -25,3 +26,8 @@ pub mod phonemize;
 pub mod piper;
 #[cfg(feature = "piper")]
 pub use piper::{PiperSynthesizer, VoicePack};
+
+#[cfg(feature = "translate")]
+pub mod translate;
+#[cfg(feature = "translate")]
+pub use translate::Ct2Translator;

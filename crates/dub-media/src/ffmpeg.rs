@@ -71,9 +71,16 @@ impl Ffmpeg {
     /// (16 kHz é o que whisper/pyannote esperam).
     pub fn extract_audio(&self, input: &Path, output: &Path, sample_rate: u32) -> Result<()> {
         self.run(&[
-            "-y", "-i", &input.to_string_lossy(),
-            "-vn", "-ac", "1", "-ar", &sample_rate.to_string(),
-            "-c:a", "pcm_s16le",
+            "-y",
+            "-i",
+            &input.to_string_lossy(),
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            &sample_rate.to_string(),
+            "-c:a",
+            "pcm_s16le",
             &output.to_string_lossy(),
         ])
     }
@@ -81,9 +88,15 @@ impl Ffmpeg {
     /// Converte qualquer WAV para outro sample rate/canais (mantém PCM 16-bit).
     pub fn resample(&self, input: &Path, output: &Path, sample_rate: u32, channels: u8) -> Result<()> {
         self.run(&[
-            "-y", "-i", &input.to_string_lossy(),
-            "-ac", &channels.to_string(), "-ar", &sample_rate.to_string(),
-            "-c:a", "pcm_s16le",
+            "-y",
+            "-i",
+            &input.to_string_lossy(),
+            "-ac",
+            &channels.to_string(),
+            "-ar",
+            &sample_rate.to_string(),
+            "-c:a",
+            "pcm_s16le",
             &output.to_string_lossy(),
         ])
     }
@@ -92,12 +105,7 @@ impl Ffmpeg {
     /// 0.5..100 por estágio; encadeamos se precisar de valores fora de 0.5..2.0.
     pub fn atempo(&self, input: &Path, output: &Path, speed: f32) -> Result<()> {
         let filter = atempo_chain(speed);
-        self.run(&[
-            "-y", "-i", &input.to_string_lossy(),
-            "-filter:a", &filter,
-            "-c:a", "pcm_s16le",
-            &output.to_string_lossy(),
-        ])
+        self.run(&["-y", "-i", &input.to_string_lossy(), "-filter:a", &filter, "-c:a", "pcm_s16le", &output.to_string_lossy()])
     }
 
     /// Junta a trilha dublada ao vídeo original. Mantém o áudio original como
@@ -114,12 +122,20 @@ impl Ffmpeg {
         }
         args.extend(["-c:v", "copy", "-c:a", "aac", "-b:a", "192k"].iter().map(|s| s.to_string()));
         args.extend([
-            "-metadata:s:a:0".to_string(), format!("language={}", lang_tag),
-            "-metadata:s:a:0".to_string(), "title=Dublado".to_string(),
-            "-disposition:a:0".to_string(), "default".to_string(),
+            "-metadata:s:a:0".to_string(),
+            format!("language={}", lang_tag),
+            "-metadata:s:a:0".to_string(),
+            "title=Dublado".to_string(),
+            "-disposition:a:0".to_string(),
+            "default".to_string(),
         ]);
         if keep_original {
-            args.extend(["-metadata:s:a:1".to_string(), "title=Original".to_string(), "-disposition:a:1".to_string(), "0".to_string()]);
+            args.extend([
+                "-metadata:s:a:1".to_string(),
+                "title=Original".to_string(),
+                "-disposition:a:1".to_string(),
+                "0".to_string(),
+            ]);
         }
         args.extend(["-shortest".to_string(), o]);
         let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
@@ -130,9 +146,21 @@ impl Ffmpeg {
     pub fn add_subtitles(&self, video: &Path, srt: &Path, output: &Path, lang_tag: &str) -> Result<()> {
         let codec = if output.extension().map(|e| e == "mkv").unwrap_or(false) { "srt" } else { "mov_text" };
         self.run(&[
-            "-y", "-i", &video.to_string_lossy(), "-i", &srt.to_string_lossy(),
-            "-map", "0", "-map", "1", "-c", "copy", "-c:s", codec,
-            "-metadata:s:s:0", &format!("language={lang_tag}"),
+            "-y",
+            "-i",
+            &video.to_string_lossy(),
+            "-i",
+            &srt.to_string_lossy(),
+            "-map",
+            "0",
+            "-map",
+            "1",
+            "-c",
+            "copy",
+            "-c:s",
+            codec,
+            "-metadata:s:s:0",
+            &format!("language={lang_tag}"),
             &output.to_string_lossy(),
         ])
     }

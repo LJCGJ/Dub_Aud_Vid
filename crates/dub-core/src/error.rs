@@ -8,11 +8,7 @@ pub enum DubError {
     EngineUnavailable { engine: String, reason: String },
 
     #[error("falha na engine '{engine}' durante {stage}: {message}")]
-    EngineFailed {
-        engine: String,
-        stage: &'static str,
-        message: String,
-    },
+    EngineFailed { engine: String, stage: &'static str, message: String },
 
     #[error("ferramenta externa não encontrada: {0}")]
     ToolMissing(String),

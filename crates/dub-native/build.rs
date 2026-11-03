@@ -12,5 +12,4 @@ fn main() {
     println!("cargo:rerun-if-changed=src/stretch.rs");
     println!("cargo:rerun-if-changed=../../native/timestretch/timestretch.cpp");
     println!("cargo:rerun-if-changed=../../native/timestretch/timestretch.h");
-
 }

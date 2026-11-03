@@ -30,11 +30,17 @@ impl YtDlp {
         let out = Command::new(&self.bin)
             .args([
                 "--no-playlist",
-                "-f", "bv*[ext=mp4][height<=1080]+ba[ext=m4a]/b[ext=mp4]/b",
-                "--merge-output-format", "mp4",
-                "--print", "after_move:filepath",
-                "--no-simulate", "--quiet", "--no-warnings",
-                "-o", &template.to_string_lossy(),
+                "-f",
+                "bv*[ext=mp4][height<=1080]+ba[ext=m4a]/b[ext=mp4]/b",
+                "--merge-output-format",
+                "mp4",
+                "--print",
+                "after_move:filepath",
+                "--no-simulate",
+                "--quiet",
+                "--no-warnings",
+                "-o",
+                &template.to_string_lossy(),
                 url,
             ])
             .output()?;
@@ -50,7 +56,8 @@ impl YtDlp {
 
     /// Título do vídeo (para nomear a saída).
     pub fn title(&self, url: &str) -> Result<String> {
-        let out = Command::new(&self.bin).args(["--no-playlist", "--print", "title", "--quiet", "--no-warnings", url]).output()?;
+        let out =
+            Command::new(&self.bin).args(["--no-playlist", "--print", "title", "--quiet", "--no-warnings", url]).output()?;
         if !out.status.success() {
             return Err(DubError::Media(String::from_utf8_lossy(&out.stderr).trim().to_string()));
         }

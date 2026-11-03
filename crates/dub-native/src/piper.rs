@@ -93,17 +93,15 @@ impl VoicePack {
                 p.to_path_buf()
             } else {
                 let file = if spec.ends_with(".onnx") { spec.to_string() } else { format!("{spec}.onnx") };
-                voice_dirs()
-                    .into_iter()
-                    .map(|d| d.join(&file))
-                    .find(|p| p.is_file())
-                    .ok_or_else(|| DubError::EngineUnavailable {
+                voice_dirs().into_iter().map(|d| d.join(&file)).find(|p| p.is_file()).ok_or_else(|| {
+                    DubError::EngineUnavailable {
                         engine: "piper".into(),
                         reason: format!(
                             "pacote de voz '{spec}' não encontrado em {}. Baixe de huggingface.co/rhasspy/piper-voices",
                             voice_dirs().iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(", ")
                         ),
-                    })?
+                    }
+                })?
             }
         };
         let json = PathBuf::from(format!("{}.json", onnx.display()));
@@ -112,7 +110,10 @@ impl VoicePack {
             reason: format!("config {} ausente: {e}", json.display()),
         })?)?;
         if cfg.phoneme_type.as_deref().unwrap_or("espeak") != "espeak" {
-            return Err(DubError::EngineUnavailable { engine: "piper".into(), reason: "só vozes com phoneme_type=espeak são suportadas".into() });
+            return Err(DubError::EngineUnavailable {
+                engine: "piper".into(),
+                reason: "só vozes com phoneme_type=espeak são suportadas".into(),
+            });
         }
         let name = onnx.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| spec.into());
         Ok(Self { name, onnx, config: cfg })
@@ -124,19 +125,7 @@ impl VoicePack {
 }
 
 pub fn voice_dirs() -> Vec<PathBuf> {
-    let mut v = Vec::new();
-    if let Some(d) = std::env::var_os("DUB_MODELS_DIR") {
-        v.push(PathBuf::from(d).join("voices"));
-    }
-    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
-        v.push(PathBuf::from(home).join(".cache").join("dub").join("voices"));
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            v.push(dir.join("voices"));
-        }
-    }
-    v
+    dub_core::paths::model_dirs(dub_core::paths::ModelKind::Voice)
 }
 
 // --- ONNX Runtime -----------------------------------------------------------------
@@ -183,7 +172,10 @@ pub fn find_ort_lib() -> Option<PathBuf> {
 
 fn ort_env() -> Result<&'static ort::environment::Environment> {
     let r = ORT_ENV.get_or_init(|| {
-        let lib = find_ort_lib().ok_or_else(|| "biblioteca onnxruntime não encontrada (defina DUB_ORT_LIB ou coloque onnxruntime.dll ao lado do executável)".to_string())?;
+        let lib = find_ort_lib().ok_or_else(|| {
+            "biblioteca onnxruntime não encontrada (defina DUB_ORT_LIB ou coloque onnxruntime.dll ao lado do executável)"
+                .to_string()
+        })?;
         info!(lib = %lib.display(), "carregando ONNX Runtime");
         ort::init_from(&lib).map_err(|e| e.to_string())?.with_name("dub").build().map_err(|e| e.to_string())
     });
@@ -251,7 +243,9 @@ impl PiperSynthesizer {
         let mut session = self.session.lock().map_err(|_| DubError::ChannelClosed("piper session"))?;
         let outputs = if let Some(sid) = self.speaker_id {
             let sid_t = Tensor::from_array(([1usize], vec![sid])).map_err(ort_err)?;
-            session.run(ort::inputs!["input" => input, "input_lengths" => lengths, "scales" => scales, "sid" => sid_t]).map_err(ort_err)?
+            session
+                .run(ort::inputs!["input" => input, "input_lengths" => lengths, "scales" => scales, "sid" => sid_t])
+                .map_err(ort_err)?
         } else {
             session.run(ort::inputs!["input" => input, "input_lengths" => lengths, "scales" => scales]).map_err(ort_err)?
         };
@@ -268,7 +262,7 @@ pub fn effective_device(requested: Device) -> Device {
         Device::DirectMl | Device::Vulkan if cfg!(feature = "ort-directml") => Device::DirectMl,
         _ => {
             if requested.is_gpu() {
-                warn!(%requested, "ONNX Runtime sem execution provider para esse dispositivo; usando CPU (features: ort-cuda / ort-directml)");
+                info!(%requested, "ONNX Runtime sem execution provider para esse dispositivo; usando CPU (features: ort-cuda / ort-directml)");
             }
             Device::Cpu
         }

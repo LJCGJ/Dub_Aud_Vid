@@ -112,7 +112,12 @@ fn ext_of(p: &Path) -> String {
 }
 
 fn sanitize(s: &str) -> String {
-    let cleaned: String = s.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' { c } else { '_' }).collect();
+    let cleaned: String =
+        s.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' { c } else { '_' }).collect();
     let trimmed = cleaned.trim().replace(' ', "_");
-    if trimmed.is_empty() { "video".into() } else { trimmed.chars().take(80).collect() }
+    if trimmed.is_empty() {
+        "video".into()
+    } else {
+        trimmed.chars().take(80).collect()
+    }
 }

@@ -48,10 +48,7 @@ pub fn plan_fit(seg: &Segment, dubbed_len: f64, next_start: Option<f64>, cfg: &T
     let base = seg.duration();
 
     // Folga até a próxima fala, respeitando margem e limite.
-    let gap = next_start
-        .map(|ns| (ns - seg.end - cfg.safety_gap).max(0.0))
-        .unwrap_or(cfg.max_overflow)
-        .min(cfg.max_overflow);
+    let gap = next_start.map(|ns| (ns - seg.end - cfg.safety_gap).max(0.0)).unwrap_or(cfg.max_overflow).min(cfg.max_overflow);
 
     let window = base + gap;
 
