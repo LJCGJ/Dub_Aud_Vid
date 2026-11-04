@@ -23,6 +23,20 @@ já traz ffmpeg, yt-dlp, onnxruntime e os dados do espeak-ng — não precisa de
 
 ![App](docs/app.png)
 
+## Requisitos
+
+| Sistema | Suporte | Observações |
+|---|---|---|
+| Windows 10 / 11 (x64) | ✔ instalador `.exe` | WebView2 já vem com o Windows. **Windows 7/8 não são suportados** (Rust, ONNX Runtime e WebView2 exigem Windows 10+). |
+| macOS (Apple Silicon) | ✔ `.dmg` | Instale o ffmpeg: `brew install ffmpeg`. Macs Intel: compile localmente (`--target x86_64-apple-darwin`). |
+| Linux x64 | ✔ `.deb` / `.AppImage` | Ubuntu 22.04+ / Debian 12+; precisa de `ffmpeg` e `webkit2gtk`. |
+
+- **CPU:** x86-64 com **AVX2** (Intel a partir de 2013 / AMD Ryzen). Os binários da release são compilados nesse nível (`native/cmake/ggml-portable.cmake`); quem compila localmente ganha otimização para a própria CPU.
+- **RAM:** 8 GB (whisper `medium` + tradutor + voz ocupam ~3 GB durante a dublagem). Com `large-v3`, 16 GB.
+- **GPU:** opcional. NVIDIA via `native-cuda`, AMD/Intel via `native-vulkan` (whisper) e `native-directml` (voz). O build da release usa CPU para o whisper e DirectML para a voz no Windows.
+- **Disco:** ~2 GB para o conjunto padrão de modelos.
+- **Internet:** só para baixar modelos (uma vez) e vídeos do YouTube. A dublagem em si é 100% offline.
+
 ## Como funciona
 
 ```

@@ -17,6 +17,8 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   ORT_VERSION: "1.20.1"
+  # whisper.cpp em modo portátil (AVX2) em vez de -march=native do runner.
+  CMAKE_TOOLCHAIN_FILE: ${{ github.workspace }}/native/cmake/ggml-portable.cmake
 
 jobs:
   build:
