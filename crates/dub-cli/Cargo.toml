@@ -6,6 +6,8 @@ authors.workspace = true
 license.workspace = true
 description = "Linha de comando do dub"
 
+build = "build.rs"
+
 [[bin]]
 name = "dub"
 path = "src/main.rs"
@@ -32,3 +34,6 @@ tracing-subscriber.workspace = true
 crossbeam-channel.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"

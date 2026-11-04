@@ -119,28 +119,20 @@ jobs:
       - name: Tauri CLI
         run: npm install -g @tauri-apps/cli@^2
 
-      - name: Build do app + instalador
+      - name: Build do app (sem instalador)
         shell: bash
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ""
         run: |
           set -e
           mkdir -p target/bundle-resources
           cp -r resources/. target/bundle-resources/
-          # pasta de modelos vazia no bundle: o app baixa para o cache do usuário
           FEAT="${{ matrix.features }}"
           cd app
           if [ -n "$FEAT" ]; then
-            tauri build --target ${{ matrix.target }} --features "$FEAT"
+            tauri build --no-bundle --target ${{ matrix.target }} --features "$FEAT"
           else
-            tauri build --target ${{ matrix.target }}
+            tauri build --no-bundle --target ${{ matrix.target }}
           fi
-          cd ..
-          mkdir -p dist
-          find target/${{ matrix.target }}/release/bundle -type f \( -name "*.exe" -o -name "*.msi" -o -name "*.dmg" -o -name "*.deb" -o -name "*.AppImage" \) -exec cp {} dist/ \;
-          ls -la dist
 
-      # ---------- CLI (zip/tar) ----------
       - name: Build da CLI
         shell: bash
         run: |
@@ -151,6 +143,79 @@ jobs:
             cargo build --release -p dub-cli --target ${{ matrix.target }}
           fi
 
+      # ---------- assinatura dos executáveis (Windows, SignPath Foundation) ----------
+      # Só roda quando o projeto estiver aprovado e as variáveis/segredos configurados;
+      # até lá o estágio é pulado e a release sai sem assinatura.
+      - name: Empacotar executáveis para assinatura
+        if: runner.os == 'Windows' && vars.SIGNPATH_ORGANIZATION_ID != ''
+        shell: bash
+        run: |
+          mkdir -p unsigned
+          cp target/${{ matrix.target }}/release/dub-app.exe target/${{ matrix.target }}/release/dub.exe unsigned/
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Windows' && vars.SIGNPATH_ORGANIZATION_ID != ''
+        id: unsigned-exes
+        with:
+          name: unsigned-exes
+          path: unsigned/*.exe
+      - name: Assinar executáveis (SignPath)
+        if: runner.os == 'Windows' && vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: executables
+          github-artifact-id: ${{ steps.unsigned-exes.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed
+      - name: Usar executáveis assinados
+        if: runner.os == 'Windows' && vars.SIGNPATH_ORGANIZATION_ID != ''
+        shell: bash
+        run: |
+          cp signed/dub-app.exe target/${{ matrix.target }}/release/dub-app.exe
+          cp signed/dub.exe     target/${{ matrix.target }}/release/dub.exe
+
+      - name: Instalador
+        shell: bash
+        run: |
+          set -e
+          cd app && tauri bundle --target ${{ matrix.target }} && cd ..
+          mkdir -p dist
+          find target/${{ matrix.target }}/release/bundle -type f \( -name "*.exe" -o -name "*.msi" -o -name "*.dmg" -o -name "*.deb" -o -name "*.AppImage" \) -exec cp {} dist/ \;
+          ls -la dist
+
+      - name: Empacotar instalador para assinatura
+        if: runner.os == 'Windows' && vars.SIGNPATH_ORGANIZATION_ID != ''
+        shell: bash
+        run: mkdir -p unsigned-installer && cp dist/*-setup.exe unsigned-installer/
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Windows' && vars.SIGNPATH_ORGANIZATION_ID != ''
+        id: unsigned-installer
+        with:
+          name: unsigned-installer
+          path: unsigned-installer/*.exe
+      - name: Assinar instalador (SignPath)
+        if: runner.os == 'Windows' && vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: installer
+          github-artifact-id: ${{ steps.unsigned-installer.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed-installer
+      - name: Usar instalador assinado
+        if: runner.os == 'Windows' && vars.SIGNPATH_ORGANIZATION_ID != ''
+        shell: bash
+        run: cp signed-installer/*-setup.exe dist/
+
+      # ---------- CLI (zip/tar) ----------
       - name: Pacote da CLI
         shell: bash
         run: |

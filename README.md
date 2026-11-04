@@ -220,6 +220,36 @@ registre em `registry.py` e implemente os métodos do protocolo
 - [x] **Parte 3** — app Tauri (dublar, progresso, modelos, configurações, diagnóstico), instalador Windows/macOS/Linux com ffmpeg + yt-dlp + onnxruntime + espeak-ng-data embutidos
 - [ ] **Depois** — voz por falante (exige diarização), separação (demucs.cpp) e diarização (sherpa-onnx) nativas, adaptador GameDub
 
+## Política de assinatura de código
+
+Os binários do Windows (`Dub_*_x64-setup.exe`, `dub-app.exe`, `dub.exe`) são
+construídos exclusivamente pelo GitHub Actions a partir deste repositório
+(`.github/workflows/release.yml`) e assinados pelo programa de código aberto do
+SignPath. *Free code signing provided by [SignPath.io](https://signpath.io),
+certificate by [SignPath Foundation](https://signpath.org).* Guia de
+configuração: [docs/assinatura-de-codigo.md](docs/assinatura-de-codigo.md).
+
+**Equipe e papéis**
+
+| Papel | Membro |
+|---|---|
+| Committer / mantenedor | [@LJCGJ](https://github.com/LJCGJ) (Leonardo Gonzaga) |
+| Revisor | [@LJCGJ](https://github.com/LJCGJ) |
+| Aprovador de assinaturas | [@LJCGJ](https://github.com/LJCGJ) |
+
+Contribuições externas (pull requests) são revisadas por um mantenedor antes de
+entrar, incluindo mudanças em workflows e scripts de build.
+
+**Privacidade**
+
+O Dub não envia dados a nenhum servidor por conta própria e não coleta
+telemetria. Acessos à rede acontecem apenas quando você pede: baixar modelos
+(GitHub Releases deste repositório e Hugging Face) e baixar vídeos do YouTube
+via yt-dlp. A dublagem roda inteiramente no seu computador. Componentes de
+terceiros incluídos no instalador: ffmpeg/ffprobe (GPL), yt-dlp (Unlicense),
+ONNX Runtime (MIT), espeak-ng-data (GPL) e vozes Piper (MIT) — cada um com sua
+própria licença, e nenhum deles faz chamadas de rede por iniciativa própria.
+
 ## Licença
 
 MIT. Modelos de terceiros têm licenças próprias (XTTS v2: CPML, não comercial).
