@@ -1,8 +1,11 @@
 name: Release
 
 # Dispara ao criar uma tag v* (ex.: `git tag v0.1.0 && git push --tags`).
-# Gera um zip por plataforma com: dub(.exe) + onnxruntime + espeak-ng-data +
-# pasta py/ (engines Python opcionais) + README, e publica no GitHub Release.
+# Publica no GitHub Release:
+#   - instalador do app de desktop (Windows .exe NSIS, macOS .dmg, Linux .deb/.AppImage)
+#   - zip/tar da CLI por plataforma
+# Ambos trazem onnxruntime + espeak-ng-data; o Windows traz também ffmpeg e yt-dlp,
+# então não exige nenhuma instalação extra.
 on:
   push:
     tags: ["v*"]
@@ -29,13 +32,15 @@ jobs:
             features: native-directml
             ort_asset: onnxruntime-win-x64-${ORT_VERSION}.zip
             ort_lib: lib/onnxruntime.dll
+            ort_name: onnxruntime.dll
             exe: dub.exe
           - name: linux-x64
-            os: ubuntu-latest
+            os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             features: ""
             ort_asset: onnxruntime-linux-x64-${ORT_VERSION}.tgz
             ort_lib: lib/libonnxruntime.so.${ORT_VERSION}
+            ort_name: libonnxruntime.so
             exe: dub
           - name: macos-arm64
             os: macos-latest
@@ -43,6 +48,7 @@ jobs:
             features: native-metal
             ort_asset: onnxruntime-osx-arm64-${ORT_VERSION}.tgz
             ort_lib: lib/libonnxruntime.${ORT_VERSION}.dylib
+            ort_name: libonnxruntime.dylib
             exe: dub
     steps:
       - uses: actions/checkout@v4
@@ -59,7 +65,79 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Build
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Dependências do Tauri (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev patchelf libayatana-appindicator3-dev
+
+      # ---------- recursos compartilhados: onnxruntime, espeak-ng-data, (ffmpeg, yt-dlp) ----------
+      - name: Baixar ONNX Runtime oficial
+        shell: bash
+        run: |
+          set -e
+          ASSET="${{ matrix.ort_asset }}"; ASSET="${ASSET//\$\{ORT_VERSION\}/$ORT_VERSION}"
+          LIB="${{ matrix.ort_lib }}";     LIB="${LIB//\$\{ORT_VERSION\}/$ORT_VERSION}"
+          curl -sSL -o ort_pkg "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ASSET}"
+          mkdir -p ort_extract
+          case "$ASSET" in *.zip) unzip -q ort_pkg -d ort_extract ;; *.tgz) tar -xzf ort_pkg -C ort_extract ;; esac
+          FOUND=$(find ort_extract -path "*/$LIB" | head -1)
+          test -n "$FOUND" || { echo "lib não encontrada: $LIB"; find ort_extract -maxdepth 3; exit 1; }
+          mkdir -p resources
+          cp "$FOUND" "resources/${{ matrix.ort_name }}"
+          find ort_extract -name "*providers_shared*" -exec cp {} resources/ \; || true
+
+      - name: espeak-ng-data (do pacote piper-tts)
+        shell: bash
+        run: |
+          python -m pip install --quiet piper-tts
+          DATA=$(python -c "import piper,os;print(os.path.join(os.path.dirname(piper.__file__),'espeak-ng-data'))")
+          cp -r "$DATA" resources/espeak-ng-data
+          test -f resources/espeak-ng-data/phontab
+
+      - name: ffmpeg + yt-dlp (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -e
+          curl -sSL -o ff.zip "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip"
+          unzip -q ff.zip -d ff
+          cp ff/*/bin/ffmpeg.exe ff/*/bin/ffprobe.exe resources/
+          cp ff/*/LICENSE.txt resources/LICENSE-ffmpeg.txt || true
+          curl -sSL -o resources/yt-dlp.exe "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+          ls -la resources
+
+      # ---------- app de desktop (Tauri) ----------
+      - name: Tauri CLI
+        run: npm install -g @tauri-apps/cli@^2
+
+      - name: Build do app + instalador
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ""
+        run: |
+          set -e
+          mkdir -p target/bundle-resources
+          cp -r resources/. target/bundle-resources/
+          # pasta de modelos vazia no bundle: o app baixa para o cache do usuário
+          FEAT="${{ matrix.features }}"
+          cd app
+          if [ -n "$FEAT" ]; then
+            tauri build --target ${{ matrix.target }} --features "$FEAT"
+          else
+            tauri build --target ${{ matrix.target }}
+          fi
+          cd ..
+          mkdir -p dist
+          find target/${{ matrix.target }}/release/bundle -type f \( -name "*.exe" -o -name "*.msi" -o -name "*.dmg" -o -name "*.deb" -o -name "*.AppImage" \) -exec cp {} dist/ \;
+          ls -la dist
+
+      # ---------- CLI (zip/tar) ----------
+      - name: Build da CLI
         shell: bash
         run: |
           FEAT="${{ matrix.features }}"
@@ -69,82 +147,35 @@ jobs:
             cargo build --release -p dub-cli --target ${{ matrix.target }}
           fi
 
-      - name: Baixar ONNX Runtime oficial
-        shell: bash
-        run: |
-          set -e
-          ASSET="${{ matrix.ort_asset }}"
-          ASSET="${ASSET//\$\{ORT_VERSION\}/$ORT_VERSION}"
-          URL="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ASSET}"
-          echo "baixando $URL"
-          curl -sSL -o ort_pkg "$URL"
-          mkdir -p ort_extract
-          case "$ASSET" in
-            *.zip) unzip -q ort_pkg -d ort_extract ;;
-            *.tgz) tar -xzf ort_pkg -C ort_extract ;;
-          esac
-          LIB="${{ matrix.ort_lib }}"
-          LIB="${LIB//\$\{ORT_VERSION\}/$ORT_VERSION}"
-          FOUND=$(find ort_extract -path "*/$LIB" | head -1)
-          test -n "$FOUND" || { echo "lib não encontrada: $LIB"; find ort_extract -maxdepth 3; exit 1; }
-          mkdir -p bundle
-          # Nome genérico que o dub procura ao lado do executável.
-          case "$FOUND" in
-            *.dll)   cp "$FOUND" bundle/onnxruntime.dll ;;
-            *.dylib) cp "$FOUND" bundle/libonnxruntime.dylib ;;
-            *.so*)   cp "$FOUND" bundle/libonnxruntime.so ;;
-          esac
-          # Providers compartilhados (CUDA/DirectML carregam a partir dele), se existirem.
-          find ort_extract -name "*providers_shared*" -exec cp {} bundle/ \; || true
-          # DirectML.dll vem com o Windows 10 1903+; o pacote win-x64 padrão é CPU.
-          # Para GPU no Windows, o usuário troca pela build Microsoft.ML.OnnxRuntime.DirectML (NuGet).
-
-      - name: Obter espeak-ng-data (do pacote piper-tts)
-        shell: bash
-        run: |
-          python -m pip install --quiet piper-tts
-          DATA=$(python -c "import piper,os;print(os.path.join(os.path.dirname(piper.__file__),'espeak-ng-data'))")
-          cp -r "$DATA" bundle/espeak-ng-data
-          test -f bundle/espeak-ng-data/phontab
-
-      - name: Montar pacote
+      - name: Pacote da CLI
         shell: bash
         run: |
           set -e
           VERSION="${GITHUB_REF_NAME#v}"
           [ "$VERSION" = "$GITHUB_REF_NAME" ] && VERSION="dev-${GITHUB_SHA::7}"
-          NAME="dub-${VERSION}-${{ matrix.name }}"
-          cp target/${{ matrix.target }}/release/${{ matrix.exe }} bundle/
-          cp -r py bundle/py
-          rm -rf bundle/py/.venv bundle/py/**/__pycache__ 2>/dev/null || true
-          cp README.md LICENSE bundle/
-          mkdir -p bundle/models/whisper bundle/models/voices bundle/models/translate
-          cat > bundle/LEIA-ME.txt <<EOF
-          dub ${VERSION} — ${{ matrix.name }}
+          NAME="dub-cli-${VERSION}-${{ matrix.name }}"
+          mkdir -p "$NAME"
+          cp target/${{ matrix.target }}/release/${{ matrix.exe }} "$NAME/"
+          cp -r resources/. "$NAME/"
+          cp -r py "$NAME/py"; rm -rf "$NAME/py/.venv"
+          cp README.md LICENSE "$NAME/"
+          cat > "$NAME/LEIA-ME.txt" <<EOF
+          dub CLI ${VERSION} — ${{ matrix.name }}
 
-          1. Baixe os modelos:   ./dub models download
-             (ou copie manualmente para models/whisper, models/voices e models/translate)
-          2. Verifique:          ./dub doctor
-          3. Dublar:             ./dub video "URL ou arquivo.mp4"
+          1. ./dub models download        (baixa whisper + voz + tradutor, ~1,8 GB)
+          2. ./dub doctor
+          3. ./dub video "URL ou arquivo.mp4"
 
+          Prefere interface gráfica? Instale o Dub (instalador na mesma release).
           Engines Python (Kokoro, XTTS, Demucs, pyannote) são opcionais: veja py/README.md.
-          GPU no Windows: substitua onnxruntime.dll pela build DirectML
-          (pacote NuGet Microsoft.ML.OnnxRuntime.DirectML).
           EOF
-          mv bundle "$NAME"
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            7z a -r "${NAME}.zip" "$NAME" > /dev/null
-          else
-            tar -czf "${NAME}.tar.gz" "$NAME"
-          fi
-          ls -la *.zip *.tar.gz 2>/dev/null || true
+          if [ "${{ runner.os }}" = "Windows" ]; then 7z a -r "dist/${NAME}.zip" "$NAME" > /dev/null; else tar -czf "dist/${NAME}.tar.gz" "$NAME"; fi
+          ls -la dist
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
-          path: |
-            dub-*.zip
-            dub-*.tar.gz
+          path: dist/*
           if-no-files-found: error
 
   publish:
@@ -162,4 +193,11 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
+          body: |
+            ## Instalação
+            **Windows:** baixe `Dub_*_x64-setup.exe`, instale e abra o Dub. Na aba *Modelos*, clique em *Baixar conjunto padrão* (~1,8 GB, uma vez). Não precisa de Python, ffmpeg nem nada mais.
+            **macOS:** `Dub_*_aarch64.dmg` (Apple Silicon). Instale o ffmpeg com `brew install ffmpeg`.
+            **Linux:** `.deb` ou `.AppImage`; instale o `ffmpeg` pela sua distribuição.
+
+            A CLI (`dub-cli-*`) está na mesma release para uso em scripts.
           draft: false

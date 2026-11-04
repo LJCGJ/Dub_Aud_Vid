@@ -11,7 +11,18 @@ pub struct YtDlp {
 
 impl YtDlp {
     pub fn locate() -> Result<Self> {
-        // Aceita `yt-dlp` no PATH ou como módulo Python (`python -m yt_dlp`).
+        let name = format!("yt-dlp{}", std::env::consts::EXE_SUFFIX);
+        if let Ok(dir) = std::env::var("DUB_TOOLS_DIR") {
+            let p = Path::new(&dir).join(&name);
+            if p.exists() {
+                return Ok(Self { bin: p });
+            }
+        }
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(p) = exe.parent().map(|d| d.join(&name)).filter(|p| p.exists()) {
+                return Ok(Self { bin: p });
+            }
+        }
         if let Ok(p) = which::which("yt-dlp") {
             return Ok(Self { bin: p });
         }

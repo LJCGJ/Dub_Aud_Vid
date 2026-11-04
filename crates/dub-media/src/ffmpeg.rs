@@ -38,10 +38,22 @@ impl Ffmpeg {
     /// Localiza os binários no PATH (ou em `FFMPEG_DIR`, se definido).
     pub fn locate() -> Result<Self> {
         let find = |name: &str| -> Result<PathBuf> {
-            if let Ok(dir) = std::env::var("FFMPEG_DIR") {
-                let p = Path::new(&dir).join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
-                if p.exists() {
-                    return Ok(p);
+            // Pastas explícitas primeiro (bundle do app ou configuração do usuário).
+            for var in ["FFMPEG_DIR", "DUB_TOOLS_DIR"] {
+                if let Ok(dir) = std::env::var(var) {
+                    let p = Path::new(&dir).join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+                    if p.exists() {
+                        return Ok(p);
+                    }
+                }
+            }
+            // Ao lado do executável.
+            if let Ok(exe) = std::env::current_exe() {
+                if let Some(dir) = exe.parent() {
+                    let p = dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+                    if p.exists() {
+                        return Ok(p);
+                    }
                 }
             }
             which::which(name).map_err(|_| DubError::ToolMissing(name.to_string()))

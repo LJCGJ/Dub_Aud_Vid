@@ -7,3 +7,4 @@ py/*.egg-info
 *.mp4
 !tests/fixtures/*.mp4
 .DS_Store
+target/bundle-resources/

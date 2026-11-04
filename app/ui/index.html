@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dub</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">
+        <span></span><span></span><span></span><span></span><span></span>
+      </div>
+      <div class="brand-text">
+        <strong>Dub</strong>
+        <small>dublagem local</small>
+      </div>
+    </div>
+    <nav>
+      <button class="nav-item active" data-view="dub">Dublar</button>
+      <button class="nav-item" data-view="models">Modelos <span id="models-badge" class="badge hidden"></span></button>
+      <button class="nav-item" data-view="settings">Configurações</button>
+      <button class="nav-item" data-view="about">Sobre</button>
+    </nav>
+    <div class="sidebar-foot">
+      <div id="device-chip" class="chip">detectando hardware…</div>
+    </div>
+  </aside>
+
+  <main>
+    <!-- ===== Dublar ===== -->
+    <section id="view-dub" class="view active">
+      <header class="view-head">
+        <h1>Dublar vídeo</h1>
+        <p>Cole um link do YouTube ou escolha um arquivo. O vídeo volta com áudio em português, legenda embutida e a faixa original preservada.</p>
+      </header>
+
+      <div id="not-ready" class="callout warn hidden">
+        <strong>Falta baixar os modelos.</strong>
+        <span>Antes da primeira dublagem é preciso baixar o reconhecedor de fala, o tradutor e uma voz (~1,8 GB).</span>
+        <button class="btn primary small" data-go="models">Ir para Modelos</button>
+      </div>
+
+      <div class="card" id="form-card">
+        <label class="field">
+          <span>Vídeo ou link</span>
+          <div class="input-row">
+            <input id="source" type="text" placeholder="https://www.youtube.com/watch?v=…  ou  C:\Vídeos\aula.mp4" spellcheck="false" />
+            <button id="pick-video" class="btn" title="Escolher arquivo">Arquivo…</button>
+          </div>
+          <small id="drop-hint">Você também pode arrastar um vídeo para esta janela.</small>
+        </label>
+
+        <div class="grid-2">
+          <label class="field">
+            <span>Voz</span>
+            <select id="voice"></select>
+          </label>
+          <label class="field">
+            <span>Qualidade da transcrição</span>
+            <select id="whisper"></select>
+          </label>
+        </div>
+
+        <label class="field">
+          <span>Salvar em</span>
+          <div class="input-row">
+            <input id="output-dir" type="text" placeholder="(padrão) ao lado do original / pasta Vídeos" spellcheck="false" />
+            <button id="pick-folder" class="btn">Pasta…</button>
+          </div>
+        </label>
+
+        <div class="actions">
+          <button id="start" class="btn primary large">Dublar</button>
+        </div>
+      </div>
+
+      <!-- progresso -->
+      <div class="card hidden" id="progress-card">
+        <div class="progress-head">
+          <div>
+            <h2 id="job-title">Preparando…</h2>
+            <p id="job-status" class="muted">iniciando</p>
+          </div>
+          <button id="cancel" class="btn danger">Cancelar</button>
+        </div>
+        <ol id="stages" class="stages">
+          <li data-stage="separate"><span class="dot"></span><span class="name">Separar voz do fundo</span><span class="pct"></span><div class="bar"><i></i></div></li>
+          <li data-stage="transcribe"><span class="dot"></span><span class="name">Transcrever</span><span class="pct"></span><div class="bar"><i></i></div></li>
+          <li data-stage="diarize"><span class="dot"></span><span class="name">Identificar falantes</span><span class="pct"></span><div class="bar"><i></i></div></li>
+          <li data-stage="translate"><span class="dot"></span><span class="name">Traduzir</span><span class="pct"></span><div class="bar"><i></i></div></li>
+          <li data-stage="synthesize"><span class="dot"></span><span class="name">Gerar voz</span><span class="pct"></span><div class="bar"><i></i></div></li>
+          <li data-stage="fit"><span class="dot"></span><span class="name">Ajustar tempo</span><span class="pct"></span><div class="bar"><i></i></div></li>
+          <li data-stage="mix"><span class="dot"></span><span class="name">Mixar e gerar vídeo</span><span class="pct"></span><div class="bar"><i></i></div></li>
+        </ol>
+        <details class="engines">
+          <summary>Engines em uso</summary>
+          <ul id="engine-list"></ul>
+        </details>
+      </div>
+
+      <!-- resultado -->
+      <div class="card hidden" id="result-card">
+        <div class="result-head">
+          <div class="result-icon ok">✓</div>
+          <div>
+            <h2>Dublagem concluída</h2>
+            <p id="result-summary" class="muted"></p>
+          </div>
+        </div>
+        <div class="result-path" id="result-path"></div>
+        <div class="actions row">
+          <button id="open-video" class="btn primary">Abrir vídeo</button>
+          <button id="reveal-video" class="btn">Mostrar na pasta</button>
+          <button id="open-srt" class="btn">Abrir legenda</button>
+          <button id="new-job" class="btn ghost">Nova dublagem</button>
+        </div>
+        <p id="result-warn" class="callout warn hidden"></p>
+      </div>
+
+      <div class="card hidden error" id="error-card">
+        <div class="result-head">
+          <div class="result-icon err">!</div>
+          <div>
+            <h2>Não foi possível concluir</h2>
+            <pre id="error-text"></pre>
+          </div>
+        </div>
+        <div class="actions row">
+          <button id="error-back" class="btn">Voltar</button>
+          <button class="btn ghost" data-go="settings">Ver diagnóstico</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== Modelos ===== -->
+    <section id="view-models" class="view">
+      <header class="view-head">
+        <h1>Modelos</h1>
+        <p>Tudo roda no seu computador. Os modelos ficam em <code id="models-path">…</code>.</p>
+      </header>
+      <div class="actions row">
+        <button id="dl-defaults" class="btn primary">Baixar conjunto padrão</button>
+        <button id="refresh-models" class="btn">Atualizar</button>
+        <span id="dl-status" class="muted"></span>
+      </div>
+      <div id="dl-progress" class="card hidden">
+        <div class="dl-row"><span id="dl-file"></span><span id="dl-bytes" class="muted"></span></div>
+        <div class="bar big"><i id="dl-bar"></i></div>
+      </div>
+      <div id="models-list"></div>
+    </section>
+
+    <!-- ===== Configurações ===== -->
+    <section id="view-settings" class="view">
+      <header class="view-head">
+        <h1>Configurações</h1>
+        <p>Salvas automaticamente.</p>
+      </header>
+
+      <div class="card">
+        <h2>Saída</h2>
+        <label class="check"><input type="checkbox" id="s-keep-original" /> Manter o áudio original como segunda faixa</label>
+        <label class="check"><input type="checkbox" id="s-subtitles" /> Embutir legenda em português</label>
+        <label class="check"><input type="checkbox" id="s-open-done" /> Mostrar o arquivo na pasta ao terminar</label>
+        <div class="grid-2">
+          <label class="field">
+            <span>Volume do fundo original <output id="s-bg-out"></output></span>
+            <input type="range" id="s-bg" min="0" max="1" step="0.05" />
+          </label>
+          <label class="field">
+            <span>Aceleração máxima da fala <output id="s-speed-out"></output></span>
+            <input type="range" id="s-speed" min="1" max="1.6" step="0.05" />
+          </label>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Idiomas</h2>
+        <div class="grid-2">
+          <label class="field"><span>Idioma do vídeo</span>
+            <select id="s-from"><option value="en">Inglês</option><option value="">Detectar automaticamente</option><option value="es">Espanhol</option><option value="ja">Japonês</option></select>
+          </label>
+          <label class="field"><span>Idioma da dublagem</span>
+            <select id="s-to"><option value="pt-BR">Português (Brasil)</option></select>
+          </label>
+        </div>
+        <small class="muted">Outros pares de idiomas exigem um tradutor correspondente em Modelos.</small>
+      </div>
+
+      <div class="card">
+        <h2>Processamento</h2>
+        <label class="check"><input type="checkbox" id="s-cpu" /> Forçar CPU (ignorar GPU)</label>
+        <label class="check"><input type="checkbox" id="s-separate" /> Separar voz do fundo (Demucs) <em class="tag">Python</em></label>
+        <label class="check"><input type="checkbox" id="s-diarize" /> Identificar falantes (pyannote) <em class="tag">Python + HF_TOKEN</em></label>
+        <small class="muted">Os recursos marcados "Python" usam engines opcionais; veja <code>py/README.md</code>. Se não estiverem instalados, o app segue sem eles.</small>
+      </div>
+
+      <div class="card">
+        <h2>Diagnóstico</h2>
+        <div id="doctor"></div>
+        <button id="refresh-doctor" class="btn small">Atualizar</button>
+      </div>
+    </section>
+
+    <!-- ===== Sobre ===== -->
+    <section id="view-about" class="view">
+      <header class="view-head">
+        <h1>Sobre</h1>
+      </header>
+      <div class="card prose">
+        <p><strong>Dub</strong> dubla vídeos automaticamente, do inglês para o português, sem enviar nada para a nuvem.</p>
+        <p>Pipeline: <code>whisper.cpp</code> (transcrição) → <code>CTranslate2</code> (tradução) → <code>Piper</code> via ONNX Runtime (voz) → ajuste de tempo WSOLA em C++ → remux com <code>ffmpeg</code>. A tradução e a síntese rodam em paralelo; a fala em português é acelerada só o necessário para caber no tempo da original, preservando o tom.</p>
+        <p>Código: <a href="#" data-open="https://github.com/LJCGJ/Dub_Aud_Vid">github.com/LJCGJ/Dub_Aud_Vid</a> · Licença MIT · Autor: Leonardo Gonzaga</p>
+        <p class="muted">Modelos de terceiros têm licenças próprias: whisper (MIT), OPUS-MT/Helsinki-NLP (CC-BY-4.0), Piper e vozes (MIT).</p>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

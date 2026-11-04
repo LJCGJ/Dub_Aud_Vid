@@ -14,19 +14,16 @@ path = "src/main.rs"
 default = ["native"]
 # Engines nativas (whisper.cpp, Piper/ONNX Runtime, WSOLA em C++). Exige cmake e um
 # compilador C++. Desligue com --no-default-features para um build só-Python.
-native = ["dep:dub-native"]
-native-cuda = ["native", "dub-native/whisper-cuda", "dub-native/ort-cuda", "dub-native/ct2-cuda"]
-native-vulkan = ["native", "dub-native/whisper-vulkan"]
-native-directml = ["native", "dub-native/ort-directml"]
-native-metal = ["native", "dub-native/whisper-metal"]
+native = ["dub-runtime/native"]
+native-cuda = ["dub-runtime/native-cuda"]
+native-vulkan = ["dub-runtime/native-vulkan"]
+native-directml = ["dub-runtime/native-directml"]
+native-metal = ["dub-runtime/native-metal"]
 
 [dependencies]
 dub-core.workspace = true
-dub-native = { workspace = true, optional = true }
+dub-runtime = { workspace = true, default-features = false }
 dub-models.workspace = true
-dub-media.workspace = true
-dub-engines-py.workspace = true
-dub-input-video.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 indicatif.workspace = true

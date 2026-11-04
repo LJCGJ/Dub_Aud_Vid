@@ -5,13 +5,16 @@
 use anyhow::{anyhow, Context, Result};
 use dub_core::{Backend, Device, EngineSet, Synthesizer, Transcriber, Translator};
 use dub_engines_py::{PyDiarizer, PySeparator, PySpec, PySynthesizer, PyTranscriber, PyTranslator, PythonEnv};
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
 use tracing::{info, warn};
 
 /// Preferência de implementação por papel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Impl {
+    #[default]
     /// Nativa se possível, senão Python.
     Auto,
     Native,
@@ -30,7 +33,8 @@ impl std::str::FromStr for Impl {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct EngineChoice {
     pub transcriber_impl: Impl,
     pub whisper_model: String,
@@ -42,6 +46,23 @@ pub struct EngineChoice {
     pub separate: bool,
     pub diarize: bool,
     pub mock: bool,
+}
+
+impl Default for EngineChoice {
+    fn default() -> Self {
+        Self {
+            transcriber_impl: Impl::Auto,
+            whisper_model: "medium".into(),
+            translator_impl: Impl::Auto,
+            translator_model: None,
+            tts: "piper".into(),
+            tts_impl: Impl::Auto,
+            voice: Some("pt_BR-faber-medium".into()),
+            separate: false,
+            diarize: false,
+            mock: false,
+        }
+    }
 }
 
 pub struct Built {

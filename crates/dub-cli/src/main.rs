@@ -1,15 +1,15 @@
-mod engines;
 mod models_cmd;
 
-use anyhow::{Context, Result};
+use dub_runtime::{engines, JobEvent, JobRequest};
+
+use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
-use dub_core::{Backend, Lang, Pipeline, PipelineConfig, Progress, Stage};
-use dub_input_video::{VideoInput, VideoOptions};
-use dub_media::Ffmpeg;
+use dub_core::{Progress, Stage};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::Instant;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -120,140 +120,102 @@ fn main() -> Result<()> {
 }
 
 fn doctor() -> Result<()> {
-    let b = Backend::detect();
+    let r = dub_runtime::doctor();
     println!("Hardware");
-    println!("  dispositivo preferido: {}", b.preferred);
-    println!("  disponíveis:           {}", b.available.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(", "));
-    println!("  threads de CPU:        {}", b.cpu_threads);
-    if let Some(g) = &b.gpu_name {
+    println!("  dispositivo preferido: {}", r.device);
+    println!("  disponíveis:           {}", r.devices.join(", "));
+    println!("  threads de CPU:        {}", r.cpu_threads);
+    if let Some(g) = &r.gpu_name {
         println!("  GPU:                   {g}");
     }
+    let print = |t: &dub_runtime::ToolStatus| println!("  {:<26} {} {}", t.name, if t.ok { "ok   " } else { "FALTA" }, t.detail);
     println!("\nFerramentas");
-    let check = |name: &str, r: std::result::Result<String, String>| match r {
-        Ok(v) => println!("  {name:<10} ok   {v}"),
-        Err(e) => println!("  {name:<10} FALTA {e}"),
-    };
-    check("ffmpeg", Ffmpeg::locate().map(|_| String::new()).map_err(|e| e.to_string()));
-    check("yt-dlp", dub_media::YtDlp::locate().map(|_| String::new()).map_err(|e| e.to_string()));
-    check(
-        "python",
-        dub_engines_py::PythonEnv::discover(None).map(|p| p.interpreter.display().to_string()).map_err(|e| e.to_string()),
-    );
-    doctor_native();
-    println!("\nModelos");
-    for (kind, entries) in dub_models::download::summary() {
-        let installed: Vec<String> = entries
-            .iter()
-            .filter_map(|(m, st)| match st {
-                dub_models::InstallStatus::Installed(_) => Some(m.name.clone()),
-                _ => None,
-            })
-            .collect();
+    r.tools.iter().for_each(print);
+    println!("\nEngines nativas{}", if r.native_enabled { "" } else { " (desligadas neste build)" });
+    r.native.iter().for_each(print);
+    println!("\nModelos instalados");
+    for kind in ["whisper", "voices", "translate"] {
+        let names: Vec<&str> = r.models.iter().filter(|m| m.kind == kind && m.installed).map(|m| m.name.as_str()).collect();
         println!(
             "  {:<10} {}",
-            kind.to_string(),
-            if installed.is_empty() { "(nenhum) — rode: dub models download".to_string() } else { installed.join(", ") }
+            kind,
+            if names.is_empty() { "(nenhum) — rode: dub models download".to_string() } else { names.join(", ") }
         );
     }
+    println!(
+        "\n{}",
+        if r.ready_native {
+            "✔ pronto para dublar sem Python"
+        } else {
+            "⚠ ainda falta algo para o fluxo 100% nativo (veja acima)"
+        }
+    );
     Ok(())
 }
 
-#[cfg(feature = "native")]
-fn doctor_native() {
-    println!("\nEngines nativas");
-    println!("  time-stretch  ok   WSOLA (C++)");
-    let found: Vec<String> =
-        dub_native::whisper::model_dirs().into_iter().filter(|d| d.is_dir()).map(|d| d.display().to_string()).collect();
-    println!(
-        "  whisper.cpp   ok   modelos em: {}",
-        if found.is_empty() { "(nenhuma pasta de modelos ainda)".into() } else { found.join(", ") }
-    );
-    let ort = dub_native::piper::find_ort_lib();
-    let esp = dub_native::phonemize::find_espeak_data();
-    match (&ort, &esp) {
-        (Some(o), Some(e)) => println!("  piper (ONNX)  ok   onnxruntime: {} | espeak-ng-data: {}", o.display(), e.display()),
-        _ => println!(
-            "  piper (ONNX)  FALTA {}{}",
-            if ort.is_none() { "onnxruntime (DUB_ORT_LIB ou onnxruntime.dll ao lado do exe) " } else { "" },
-            if esp.is_none() { "espeak-ng-data (DUB_ESPEAK_DATA)" } else { "" }
-        ),
-    }
-}
-
-#[cfg(not(feature = "native"))]
-fn doctor_native() {
-    println!("\nEngines nativas: desligadas (compile com a feature 'native')");
-}
-
 fn video(a: VideoArgs) -> Result<()> {
-    let started = Instant::now();
-    let backend = if a.cpu { Backend::cpu_only() } else { Backend::detect() };
-    eprintln!(
-        "▶ dispositivo: {}{}",
-        backend.preferred,
-        backend.gpu_name.as_deref().map(|g| format!(" ({g})")).unwrap_or_default()
-    );
-
-    // 1. Entrada ----------------------------------------------------------
-    let tmp_work = a.work_dir.clone().unwrap_or_else(|| PathBuf::from("dub_work").join("_tmp"));
-    let input = VideoInput::open(&a.source, &tmp_work).context("abrir vídeo")?;
-    let work_dir = a.work_dir.clone().unwrap_or_else(|| PathBuf::from("dub_work").join(sanitize(&input.title)));
-    let input = input.with_work_dir(&work_dir)?;
-    eprintln!("▶ vídeo: {}", input.title);
-
-    let job = input.prepare().context("extrair áudio")?;
-
-    // 2. Engines ----------------------------------------------------------
-    eprintln!("▶ carregando engines…");
-    let choice = engines::EngineChoice {
-        transcriber_impl: a.transcriber,
-        whisper_model: a.whisper_model,
-        translator_impl: a.translator,
-        translator_model: a.translator_model,
-        tts: a.tts,
-        tts_impl: a.tts_impl,
-        voice: a.voice,
-        separate: !a.no_separate,
-        diarize: !a.no_diarize,
-        mock: a.mock,
-    };
-    let built = engines::build(&choice, &backend, &work_dir)?;
-    for (role, info) in built.engines.describe() {
-        let kind = if built.native_roles.contains(&role) { "nativa" } else { "python" };
-        eprintln!("  {role:<12} {} [{}] em {} ({kind})", info.name, info.model, info.device);
-    }
-    let engine_set = built.engines;
-
-    // 3. Pipeline ---------------------------------------------------------
-    let cfg = PipelineConfig {
-        source_lang: if a.from.is_empty() { None } else { Some(Lang::from(a.from.as_str())) },
-        target_lang: Lang::from(a.to.as_str()),
+    let req = JobRequest {
+        source: a.source,
+        output: a.out,
+        output_dir: None,
+        work_dir: a.work_dir,
+        source_lang: if a.from.is_empty() { None } else { Some(a.from) },
+        target_lang: a.to,
+        force_cpu: a.cpu,
+        engines: engines::EngineChoice {
+            transcriber_impl: a.transcriber,
+            whisper_model: a.whisper_model,
+            translator_impl: a.translator,
+            translator_model: a.translator_model,
+            tts: a.tts,
+            tts_impl: a.tts_impl,
+            voice: a.voice,
+            separate: !a.no_separate,
+            diarize: !a.no_diarize,
+            mock: a.mock,
+        },
+        keep_original_audio: !a.no_original_track,
+        embed_subtitles: !a.no_subtitles,
         background_gain: a.background_gain,
-        timing: dub_core::timing::TimingConfig { max_speed: a.max_speed, ..Default::default() },
-        ..Default::default()
+        max_speed: a.max_speed,
+        ffmpeg_stretch: a.ffmpeg_stretch,
     };
-
-    let stretcher = engines::default_stretcher(a.ffmpeg_stretch)?;
-    let pipeline = Pipeline::new(engine_set, cfg).with_stretcher(stretcher);
 
     let (tx, rx) = crossbeam_channel::unbounded::<Progress>();
     let ui = std::thread::spawn(move || progress_ui(rx));
-    let output = pipeline.run(&job, Some(tx)).context("pipeline de dublagem")?;
-    let _ = ui.join();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let result = dub_runtime::run_video_job(&req, cancel, |ev| match ev {
+        JobEvent::Device { device, gpu_name } => {
+            eprintln!("▶ dispositivo: {device}{}", gpu_name.map(|g| format!(" ({g})")).unwrap_or_default())
+        }
+        JobEvent::Status { message } => eprintln!("▶ {message}…"),
+        JobEvent::Opened { title, .. } => eprintln!("▶ vídeo: {title}"),
+        JobEvent::Engines { engines } => {
+            for e in engines {
+                eprintln!(
+                    "  {:<12} {} [{}] em {} ({})",
+                    e.role,
+                    e.name,
+                    e.model,
+                    e.device,
+                    if e.native { "nativa" } else { "python" }
+                );
+            }
+        }
+        JobEvent::Progress(p) => {
+            let _ = tx.send(p);
+        }
+        JobEvent::Done(_) | JobEvent::Error { .. } => {}
+    });
+    drop(ui);
+    let r = result?;
 
-    // 4. Saída ------------------------------------------------------------
-    let out_path = a.out.unwrap_or_else(|| input.default_output(&a.to));
-    let opts = VideoOptions { keep_original_audio: !a.no_original_track, embed_subtitles: !a.no_subtitles, ..Default::default() };
-    let final_path = input.finish(&output, &out_path, &opts).context("remux")?;
-
-    let secs = started.elapsed().as_secs();
-    eprintln!("\n✔ pronto em {}m{:02}s", secs / 60, secs % 60);
-    eprintln!("  vídeo:    {}", final_path.display());
-    eprintln!("  legenda:  {}", output.srt.display());
-    eprintln!("  segmentos: {}", output.segments.len());
-    let sped: Vec<_> = output.segments.iter().filter(|s| s.speed_factor > 1.25).collect();
-    if !sped.is_empty() {
-        eprintln!("  ⚠ {} segmentos acelerados acima de 1.25x (tradução longa)", sped.len());
+    eprintln!("\n✔ pronto em {}m{:02}s", r.elapsed_secs / 60, r.elapsed_secs % 60);
+    eprintln!("  vídeo:    {}", r.video.display());
+    eprintln!("  legenda:  {}", r.srt.display());
+    eprintln!("  segmentos: {}", r.segments.len());
+    if r.rushed_segments > 0 {
+        eprintln!("  ⚠ {} segmentos acelerados acima de 1.25x (tradução longa)", r.rushed_segments);
     }
     Ok(())
 }
@@ -297,9 +259,4 @@ fn progress_ui(rx: crossbeam_channel::Receiver<Progress>) {
             b.finish();
         }
     }
-}
-
-fn sanitize(s: &str) -> String {
-    let c: String = s.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
-    c.chars().take(60).collect()
 }

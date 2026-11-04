@@ -1,0 +1,36 @@
+[package]
+name = "dub-app"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Interface de desktop do dub (Tauri)"
+build = "build.rs"
+
+[[bin]]
+name = "dub-app"
+path = "src/main.rs"
+
+[features]
+default = ["native"]
+native = ["dub-runtime/native"]
+native-cuda = ["dub-runtime/native-cuda"]
+native-vulkan = ["dub-runtime/native-vulkan"]
+native-directml = ["dub-runtime/native-directml"]
+native-metal = ["dub-runtime/native-metal"]
+
+[dependencies]
+dub-core.workspace = true
+dub-runtime.workspace = true
+dub-models.workspace = true
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }

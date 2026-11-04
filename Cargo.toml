@@ -8,6 +8,8 @@ members = [
     "crates/dub-cli",
     "crates/dub-native",
     "crates/dub-models",
+    "crates/dub-runtime",
+    "app",
 ]
 
 [workspace.package]
@@ -38,6 +40,7 @@ dub-engines-py = { path = "crates/dub-engines-py" }
 dub-input-video = { path = "crates/dub-input-video" }
 dub-native = { path = "crates/dub-native" }
 dub-models = { path = "crates/dub-models" }
+dub-runtime = { path = "crates/dub-runtime", default-features = false }
 
 [profile.release]
 lto = "thin"

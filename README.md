@@ -16,9 +16,12 @@ dub video aula.mp4 --tts kokoro --voice pf_dora     # TTS via Python (opcional)
 dub doctor
 ```
 
-**Começo rápido (Windows):** baixe o zip da [última release](https://github.com/LJCGJ/Dub_Aud_Vid/releases),
-extraia, e rode `dub.exe models download` seguido de `dub.exe video <arquivo ou URL>`.
-Não precisa de Python para o fluxo principal.
+**Começo rápido (Windows):** baixe o instalador `Dub_*_x64-setup.exe` da
+[última release](https://github.com/LJCGJ/Dub_Aud_Vid/releases), abra o Dub, vá em
+*Modelos* → *Baixar conjunto padrão* (uma vez) e cole o link do vídeo. O instalador
+já traz ffmpeg, yt-dlp, onnxruntime e os dados do espeak-ng — não precisa de Python.
+
+![App](docs/app.png)
 
 ## Como funciona
 
@@ -50,7 +53,9 @@ Não precisa de Python para o fluxo principal.
 | `dub-input-video` | Rust | Adaptador vídeo/YouTube (`prepare` → pipeline → `finish`) |
 | `dub-native` | Rust + C++ | Engines nativas: WSOLA (C++ via `cxx`), whisper.cpp, CTranslate2, Piper via ONNX Runtime + espeak-ng |
 | `dub-models` | Rust | Catálogo e download de modelos (`dub models`) |
-| `dub-cli` | Rust | Comando `dub`; tenta engine nativa → cai para Python |
+| `dub-runtime` | Rust | Compartilhado por CLI e app: resolução de engines (nativa → Python), execução do job com eventos, diagnóstico |
+| `dub-cli` | Rust | Comando `dub` |
+| `app/` | Rust + HTML/JS | App de desktop (Tauri 2): dublar, progresso por etapa, modelos, configurações |
 | `py/dub_engines` | Python | Engines: faster-whisper, Marian/NLLB, Piper, Kokoro, XTTS, Demucs, pyannote |
 | `native/timestretch` | C++ | Time-stretch WSOLA (preserva o tom), usado pelo `dub-native` |
 
@@ -163,6 +168,18 @@ dub video <arquivo|url> [opções]
 Arquivos intermediários ficam em `dub_work/<título>/` (áudio extraído, voz e
 fundo separados, cada segmento sintetizado, `dub.srt`, `dub_mix.wav`).
 
+## App de desktop
+
+```bash
+cargo run -p dub-app                 # desenvolvimento (precisa de webkit2gtk no Linux)
+npm i -g @tauri-apps/cli && cd app && tauri build   # instalador (NSIS/dmg/deb/AppImage)
+```
+
+O app lê os recursos empacotados (`onnxruntime`, `espeak-ng-data`, `ffmpeg`,
+`yt-dlp`) da pasta de instalação e os modelos de `%LOCALAPPDATA%\dub` /
+`~/.cache/dub`. Preferências ficam em `settings.json` na pasta de configuração
+do usuário. O frontend é HTML/CSS/JS puro (`app/ui/`), sem bundler.
+
 ## Desenvolvimento
 
 ```bash
@@ -186,8 +203,8 @@ registre em `registry.py` e implemente os métodos do protocolo
 - [x] **Parte 1** — core, pipeline paralelo, engines Python, CLI, adaptador vídeo/YouTube
 - [x] **Parte 2** — WSOLA em C++, whisper.cpp nativo, Piper nativo (ONNX Runtime + espeak-ng), fallback nativa → Python
 - [x] **Parte 2b** — tradução nativa (CTranslate2), `dub models`, CI em 3 SOs, releases por tag, workflow de conversão de modelos. Fluxo principal 100% sem Python
-- [ ] **Parte 3** — UI Tauri, voz por falante, adaptador GameDub, instalador Windows
-- [ ] **Depois** — separação (demucs.cpp) e diarização (sherpa-onnx) nativas
+- [x] **Parte 3** — app Tauri (dublar, progresso, modelos, configurações, diagnóstico), instalador Windows/macOS/Linux com ffmpeg + yt-dlp + onnxruntime + espeak-ng-data embutidos
+- [ ] **Depois** — voz por falante (exige diarização), separação (demucs.cpp) e diarização (sherpa-onnx) nativas, adaptador GameDub
 
 ## Licença
 
