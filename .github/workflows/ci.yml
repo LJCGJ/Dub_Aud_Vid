@@ -3,7 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
-    paths-ignore: ["**.md", "app/**"]
+    paths-ignore: ["**.md", "docs/**"]
   pull_request:
     branches: [main]
   workflow_dispatch:
