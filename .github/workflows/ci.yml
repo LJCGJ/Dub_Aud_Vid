@@ -54,6 +54,8 @@ jobs:
       - name: ffmpeg (Linux/Windows)
         if: runner.os != 'macOS'
         uses: FedericoCarboni/setup-ffmpeg@v3
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: ffmpeg (macOS)
         if: runner.os == 'macOS'
