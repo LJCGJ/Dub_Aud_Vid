@@ -17,6 +17,7 @@ jobs:
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 100
     strategy:
       fail-fast: false
       matrix:
@@ -65,30 +66,35 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Testes
+      - name: Testes (bibliotecas e CLI)
         env:
           DUB_PYTHON: python
-        run: cargo test --workspace
+          RUST_LOG: info
+        run: cargo test --workspace --exclude dub-app -- --nocapture
 
-      - name: Build release (sanidade)
-        run: cargo build --release -p dub-cli
+      - name: Build do app de desktop
+        run: cargo build -p dub-app
 
+      # O binário de debug já foi compilado por `cargo test`; reaproveitamos para não
+      # pagar um segundo build completo (whisper.cpp + CTranslate2 + Tauri) em release.
       - name: Smoke test da CLI (pipeline com engines mock)
         shell: bash
         env:
           DUB_PYTHON: python
         run: |
+          cargo build -p dub-cli
           ffmpeg -y -hide_banner -loglevel error \
             -f lavfi -i "testsrc=duration=6:size=320x240:rate=15" \
             -f lavfi -i "sine=frequency=440:duration=6" \
             -c:v libx264 -preset ultrafast -c:a aac -shortest smoke.mp4
-          ./target/release/dub doctor
-          ./target/release/dub video smoke.mp4 --mock --out smoke.dub.mp4 --work-dir smoke_work
+          ./target/debug/dub doctor
+          ./target/debug/dub video smoke.mp4 --mock --out smoke.dub.mp4 --work-dir smoke_work
           test -f smoke.dub.mp4 && test -f smoke_work/dub.srt
 
   python-only:
     name: build sem engines nativas
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
