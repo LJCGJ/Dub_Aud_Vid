@@ -10,6 +10,10 @@ build = "build.rs"
 [[bin]]
 name = "dub-app"
 path = "src/main.rs"
+# O harness de teste de um binário Tauri trava no Windows (não há testes aqui;
+# o app é validado por compilação e pelo smoke test da CLI).
+test = false
+bench = false
 
 [features]
 default = ["native"]
