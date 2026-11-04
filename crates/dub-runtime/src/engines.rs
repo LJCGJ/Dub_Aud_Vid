@@ -74,6 +74,7 @@ pub struct Built {
 pub fn build(choice: &EngineChoice, backend: &Backend, work_dir: &Path) -> Result<Built> {
     let gpu = backend.preferred;
     let cpu_threads = backend.cpu_threads_for_side_work();
+    let work_threads = backend.work_threads();
     let mut native_roles = Vec::new();
 
     // Python é opcional: só é resolvido se alguma engine precisar dele.
@@ -113,11 +114,11 @@ pub fn build(choice: &EngineChoice, backend: &Backend, work_dir: &Path) -> Resul
     };
     let transcriber: Arc<dyn Transcriber> = match choice.transcriber_impl {
         Impl::Python => py_transcriber(&mut py_env)?,
-        Impl::Native => native_transcriber(choice, gpu, backend.cpu_threads)
+        Impl::Native => native_transcriber(choice, backend, work_threads)
             .context("transcrição nativa (whisper.cpp)")?
             .ok_or_else(|| anyhow!("transcrição nativa indisponível: compile com a feature 'native'"))
             .inspect(|_| native_roles.push("transcriber"))?,
-        Impl::Auto => match native_transcriber(choice, gpu, backend.cpu_threads) {
+        Impl::Auto => match native_transcriber(choice, backend, work_threads) {
             Ok(Some(t)) => {
                 native_roles.push("transcriber");
                 t
@@ -232,13 +233,13 @@ fn python_tts(env: &PythonEnv, choice: &EngineChoice, gpu: Device, work_dir: &Pa
 // --- nativas (compiladas só com a feature `native`) ------------------------------
 
 #[cfg(feature = "native")]
-fn native_transcriber(choice: &EngineChoice, gpu: Device, threads: usize) -> Result<Option<Arc<dyn Transcriber>>> {
-    let t = dub_native::WhisperTranscriber::load(&choice.whisper_model, gpu, threads)?;
+fn native_transcriber(choice: &EngineChoice, backend: &Backend, threads: usize) -> Result<Option<Arc<dyn Transcriber>>> {
+    let t = dub_native::WhisperTranscriber::load_with_backend(&choice.whisper_model, backend.preferred, threads, Some(backend))?;
     Ok(Some(Arc::new(t)))
 }
 
 #[cfg(not(feature = "native"))]
-fn native_transcriber(_: &EngineChoice, _: Device, _: usize) -> Result<Option<Arc<dyn Transcriber>>> {
+fn native_transcriber(_: &EngineChoice, _: &Backend, _: usize) -> Result<Option<Arc<dyn Transcriber>>> {
     Ok(None)
 }
 

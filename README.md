@@ -33,7 +33,8 @@ já traz ffmpeg, yt-dlp, onnxruntime e os dados do espeak-ng — não precisa de
 
 - **CPU:** x86-64 com **AVX2** (Intel a partir de 2013 / AMD Ryzen). Os binários da release são compilados nesse nível (`native/cmake/ggml-portable.cmake`); quem compila localmente ganha otimização para a própria CPU.
 - **RAM:** 8 GB (whisper `medium` + tradutor + voz ocupam ~3 GB durante a dublagem). Com `large-v3`, 16 GB.
-- **Placa de vídeo: não é necessária.** Tudo roda na CPU. Uma GPU só acelera: NVIDIA (GTX 10xx+, build `native-cuda`), AMD/Intel via `native-vulkan` (whisper) e `native-directml` (voz). O build da release usa CPU para o whisper e DirectML para a voz no Windows.
+- **Placa de vídeo: não é necessária.** Tudo roda na CPU. Se houver uma, o instalador do Windows a usa **automaticamente**, sem instalar CUDA: whisper via Vulkan e voz via DirectML — NVIDIA, AMD ou Intel, inclusive placas modestas como uma GT 1030. Se o modelo não couber na VRAM com 20 % de folga, aquela etapa fica na CPU e o app avisa (use `medium-q5_0` ou `small` em placas de 2 GB). Quem compila localmente com NVIDIA pode usar `native-cuda` para o máximo de desempenho.
+- **Uso do hardware:** o modo *Equilibrado* (padrão) deixa um núcleo livre e roda com prioridade abaixo do normal, para o PC continuar respondendo; *Econômico* usa metade dos núcleos e nenhuma GPU; *Máximo* usa tudo. Nenhum ajuste de clock ou voltagem é feito — a GPU é usada pelas mesmas APIs de um jogo, e o driver controla temperatura e consumo.
 - **Disco:** ~2 GB para o conjunto padrão de modelos.
 - **Internet:** só para baixar modelos (uma vez) e vídeos do YouTube. A dublagem em si é 100% offline.
 

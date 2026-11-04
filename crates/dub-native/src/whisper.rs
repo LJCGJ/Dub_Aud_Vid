@@ -25,11 +25,30 @@ impl WhisperTranscriber {
     /// `model` pode ser um caminho para o `.bin` ou um nome curto (`medium`,
     /// `large-v3`, `small-q5_1`...) que será resolvido nos diretórios de modelos.
     pub fn load(model: &str, device: Device, threads: usize) -> Result<Self> {
+        Self::load_with_backend(model, device, threads, None)
+    }
+
+    /// Como `load`, mas consulta o `Backend` para saber se o modelo cabe na VRAM
+    /// (com a margem da política de desempenho). Se não couber, usa CPU e avisa.
+    pub fn load_with_backend(model: &str, device: Device, threads: usize, backend: Option<&dub_core::Backend>) -> Result<Self> {
         let path = resolve_model(model)?;
         whisper_rs::install_logging_hooks();
 
         // Sem backend de GPU compilado, o whisper.cpp roda em CPU mesmo com use_gpu=true.
-        let device = effective_device(device);
+        let mut device = effective_device(device);
+        if device.is_gpu() {
+            if let Some(b) = backend {
+                let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                match b.gpu_fits(size) {
+                    dub_core::GpuFit::TooSmall { vram_mb, needed_mb } => {
+                        warn!(vram_mb, needed_mb, "modelo não cabe na VRAM com margem; whisper vai para a CPU (use um modelo menor, ex. medium-q5_0, para usar a GPU)");
+                        device = Device::Cpu;
+                    }
+                    dub_core::GpuFit::NoGpu => device = Device::Cpu,
+                    _ => {}
+                }
+            }
+        }
         let mut params = WhisperContextParameters::default();
         params.use_gpu(device.is_gpu());
         // flash attention acelera bastante em GPU; em CPU é neutro.
@@ -105,10 +124,12 @@ impl Transcriber for WhisperTranscriber {
 }
 
 /// Dispositivo que o whisper.cpp realmente vai usar, dado o backend compilado.
+/// Qualquer GPU serve ao Vulkan (NVIDIA, AMD, Intel): se só ele foi compilado,
+/// uma placa NVIDIA detectada como CUDA ainda usa a GPU — via Vulkan.
 pub fn effective_device(requested: Device) -> Device {
     match requested {
         Device::Cuda if cfg!(feature = "whisper-cuda") => Device::Cuda,
-        Device::Vulkan | Device::DirectMl if cfg!(feature = "whisper-vulkan") => Device::Vulkan,
+        Device::Cuda | Device::Vulkan | Device::DirectMl if cfg!(feature = "whisper-vulkan") => Device::Vulkan,
         Device::Metal if cfg!(feature = "whisper-metal") => Device::Metal,
         _ => {
             if requested.is_gpu() {

@@ -61,8 +61,9 @@ async function init() {
 function renderDeviceChip() {
   const chip = $("#device-chip");
   const gpu = doctor.device !== "CPU";
-  chip.textContent = gpu ? `${doctor.device}${doctor.gpu_name ? " · " + doctor.gpu_name : ""}` : `CPU · ${doctor.cpu_threads} threads`;
-  chip.classList.toggle("gpu", gpu);
+  const usable = gpu && doctor.gpu_backends.length > 0;
+  chip.textContent = usable ? `${doctor.gpu_name || doctor.device}` : `CPU · ${doctor.cpu_threads} threads${gpu ? " (GPU não usada neste build)" : ""}`;
+  chip.classList.toggle("gpu", usable);
   chip.title = `Dispositivos: ${doctor.devices.join(", ")}`;
 }
 
@@ -334,6 +335,7 @@ function fillSettingsForm() {
   $("#s-from").value = settings.source_lang ?? "en";
   $("#s-to").value = settings.target_lang;
   $("#s-cpu").checked = settings.force_cpu;
+  $("#s-perf").value = settings.performance || "balanced";
   $("#s-separate").checked = settings.separate;
   $("#s-diarize").checked = settings.diarize;
   updateOutputs();
@@ -351,6 +353,7 @@ function readSettingsForm() {
   settings.source_lang = $("#s-from").value;
   settings.target_lang = $("#s-to").value;
   settings.force_cpu = $("#s-cpu").checked;
+  settings.performance = $("#s-perf").value;
   settings.separate = $("#s-separate").checked;
   settings.diarize = $("#s-diarize").checked;
 }
@@ -378,7 +381,8 @@ function renderDoctor() {
   const row = (t) => `<div class="doc-row"><span class="${t.ok ? "ok" : "bad"}">${t.ok ? "✓" : "✕"}</span><span>${t.name}</span><span class="detail">${t.detail}</span></div>`;
   el.innerHTML =
     `<div class="doc-title">Hardware</div>
-     <div class="doc-row"><span class="ok">✓</span><span>dispositivo</span><span class="detail">${doctor.device}${doctor.gpu_name ? " · " + doctor.gpu_name : ""} · ${doctor.cpu_threads} threads · disponíveis: ${doctor.devices.join(", ")}</span></div>
+     <div class="doc-row"><span class="ok">✓</span><span>dispositivo</span><span class="detail">${doctor.device}${doctor.gpu_name ? " · " + doctor.gpu_name : ""}${doctor.gpu_vram_mb ? " · " + Math.round(doctor.gpu_vram_mb / 1024) + " GB VRAM" : ""} · ${doctor.cpu_threads} threads · disponíveis: ${doctor.devices.join(", ")}</span></div>
+     <div class="doc-row"><span class="${doctor.gpu_backends.length ? "ok" : ""}">${doctor.gpu_backends.length ? "✓" : "–"}</span><span>GPU neste build</span><span class="detail">${doctor.gpu_backends.length ? doctor.gpu_backends.join(", ") : "nenhum backend de GPU compilado — tudo roda em CPU"}</span></div>
      <div class="doc-title">Ferramentas</div>${doctor.tools.map(row).join("")}
      <div class="doc-title">Engines nativas</div>${doctor.native.map(row).join("")}
      <div class="ready ${doctor.ready_native ? "yes" : "no"}">${doctor.ready_native ? "Pronto para dublar sem Python." : "Ainda falta algo para o fluxo 100% nativo — veja os itens acima e a aba Modelos."}</div>`;

@@ -209,7 +209,7 @@ impl PiperSynthesizer {
             #[cfg(feature = "ort-cuda")]
             Device::Cuda => eps.push(ort::ep::CUDA::default().build()),
             #[cfg(feature = "ort-directml")]
-            Device::DirectMl | Device::Vulkan => eps.push(ort::ep::DirectML::default().build()),
+            Device::DirectMl => eps.push(ort::ep::DirectML::default().build()),
             _ => {}
         }
         eps.push(ort::ep::CPU::default().build());
@@ -259,7 +259,8 @@ impl PiperSynthesizer {
 pub fn effective_device(requested: Device) -> Device {
     match requested {
         Device::Cuda if cfg!(feature = "ort-cuda") => Device::Cuda,
-        Device::DirectMl | Device::Vulkan if cfg!(feature = "ort-directml") => Device::DirectMl,
+        // DirectML roda em qualquer GPU do Windows, NVIDIA incluída.
+        Device::Cuda | Device::DirectMl | Device::Vulkan if cfg!(feature = "ort-directml") => Device::DirectMl,
         _ => {
             if requested.is_gpu() {
                 info!(%requested, "ONNX Runtime sem execution provider para esse dispositivo; usando CPU (features: ort-cuda / ort-directml)");

@@ -26,6 +26,8 @@ pub struct JobRequest {
     pub source_lang: Option<String>,
     pub target_lang: String,
     pub force_cpu: bool,
+    /// Política de uso do hardware (eco | balanced | max).
+    pub performance: dub_core::Performance,
     pub engines: EngineChoice,
     pub keep_original_audio: bool,
     pub embed_subtitles: bool,
@@ -44,6 +46,7 @@ impl Default for JobRequest {
             source_lang: Some("en".into()),
             target_lang: "pt-BR".into(),
             force_cpu: false,
+            performance: dub_core::Performance::default(),
             engines: EngineChoice::default(),
             keep_original_audio: true,
             embed_subtitles: true,
@@ -109,7 +112,8 @@ pub enum JobEvent {
 /// pode ser setado de outra thread para interromper no próximo ponto seguro.
 pub fn run_video_job(req: &JobRequest, cancel: Arc<AtomicBool>, mut on_event: impl FnMut(JobEvent)) -> Result<JobResult> {
     let started = Instant::now();
-    let backend = if req.force_cpu { Backend::cpu_only() } else { Backend::detect() };
+    let backend = if req.force_cpu { Backend::cpu_only() } else { Backend::detect() }.with_performance(req.performance);
+    lower_process_priority();
     on_event(JobEvent::Device { device: backend.preferred.to_string(), gpu_name: backend.gpu_name.clone() });
 
     // 1. Entrada ----------------------------------------------------------
@@ -206,6 +210,22 @@ pub fn run_video_job(req: &JobRequest, cancel: Arc<AtomicBool>, mut on_event: im
     };
     on_event(JobEvent::Done(result.clone()));
     Ok(result)
+}
+
+/// Põe o processo em prioridade "abaixo do normal": a dublagem usa a máquina
+/// inteira por minutos, e assim o resto do sistema continua respondendo.
+/// Vale para as threads de inferência e para os processos Python filhos.
+fn lower_process_priority() {
+    #[cfg(unix)]
+    unsafe {
+        // nice +5: ainda rápido, mas cede para o que o usuário estiver fazendo.
+        let _ = libc::setpriority(libc::PRIO_PROCESS, 0, 5);
+    }
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, SetPriorityClass, BELOW_NORMAL_PRIORITY_CLASS};
+        let _ = SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS);
+    }
 }
 
 fn check_cancel(cancel: &AtomicBool) -> Result<()> {

@@ -191,6 +191,15 @@
 
       <div class="card">
         <h2>Processamento</h2>
+        <label class="field">
+          <span>Uso do hardware</span>
+          <select id="s-perf">
+            <option value="balanced">Equilibrado — deixa um núcleo livre; GPU quando o modelo cabe com folga (padrão)</option>
+            <option value="eco">Econômico — metade dos núcleos, sem GPU (notebook, máquina fraca)</option>
+            <option value="max">Máximo — todos os núcleos e GPU sempre que possível</option>
+          </select>
+          <small>A dublagem roda com prioridade abaixo do normal: o resto do PC continua respondendo. Nenhum ajuste de clock ou voltagem é feito — o driver controla a GPU, como num jogo.</small>
+        </label>
         <label class="check"><input type="checkbox" id="s-cpu" /> Forçar CPU (ignorar GPU)</label>
         <label class="check"><input type="checkbox" id="s-separate" /> Separar voz do fundo (Demucs) <em class="tag">Python</em></label>
         <label class="check"><input type="checkbox" id="s-diarize" /> Identificar falantes (pyannote) <em class="tag">Python + HF_TOKEN</em></label>

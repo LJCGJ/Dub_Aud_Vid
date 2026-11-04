@@ -33,7 +33,9 @@ jobs:
           - name: windows-x64
             os: windows-latest
             target: x86_64-pc-windows-msvc
-            features: native-directml
+            # Vulkan: whisper em qualquer GPU (NVIDIA/AMD/Intel) sem CUDA instalado.
+            # DirectML: voz (Piper) em qualquer GPU. Ambos caem para CPU se não houver GPU.
+            features: native-vulkan,native-directml
             ort_asset: onnxruntime-win-x64-${ORT_VERSION}.zip
             ort_lib: lib/onnxruntime.dll
             ort_name: onnxruntime.dll
@@ -79,6 +81,15 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev patchelf libayatana-appindicator3-dev
 
+      # whisper.cpp com backend Vulkan precisa do SDK (headers + glslc) só na hora de
+      # compilar; em tempo de execução basta o driver de vídeo do usuário.
+      - name: Vulkan SDK (Windows)
+        if: runner.os == 'Windows'
+        uses: humbletim/install-vulkan-sdk@v1.2
+        with:
+          version: 1.3.290.0
+          cache: true
+
       # ---------- recursos compartilhados: onnxruntime, espeak-ng-data, (ffmpeg, yt-dlp) ----------
       - name: Baixar ONNX Runtime oficial
         shell: bash
@@ -102,6 +113,23 @@ jobs:
           DATA=$(python -c "import piper,os;print(os.path.join(os.path.dirname(piper.__file__),'espeak-ng-data'))")
           cp -r "$DATA" resources/espeak-ng-data
           test -f resources/espeak-ng-data/phontab
+
+      - name: ONNX Runtime DirectML (Windows — voz em qualquer GPU)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -e
+          # Substitui a onnxruntime.dll de CPU pela variante DirectML, que usa a GPU quando
+          # houver e cai para CPU sozinha quando não houver. DirectML.dll vai junto (a do
+          # System32 pode ser antiga).
+          curl -sSL -o ortdml.nupkg "https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime.DirectML/${ORT_VERSION}"
+          unzip -q -o ortdml.nupkg -d ortdml
+          cp ortdml/runtimes/win-x64/native/onnxruntime.dll resources/onnxruntime.dll
+          curl -sSL -o dml.nupkg "https://www.nuget.org/api/v2/package/Microsoft.AI.DirectML/1.15.4"
+          unzip -q -o dml.nupkg -d dml
+          cp dml/bin/x64-win/DirectML.dll resources/DirectML.dll
+          cp dml/LICENSE.txt resources/LICENSE-DirectML.txt
+          ls -la resources/*.dll
 
       - name: ffmpeg + yt-dlp (Windows)
         if: runner.os == 'Windows'

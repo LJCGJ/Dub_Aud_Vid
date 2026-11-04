@@ -20,6 +20,8 @@ pub struct Settings {
     pub background_gain: f32,
     pub max_speed: f32,
     pub force_cpu: bool,
+    /// eco | balanced | max
+    pub performance: dub_core::Performance,
     /// Recursos avançados que exigem as engines Python.
     pub separate: bool,
     pub diarize: bool,
@@ -41,6 +43,7 @@ impl Default for Settings {
             background_gain: 0.9,
             max_speed: 1.35,
             force_cpu: false,
+            performance: dub_core::Performance::Balanced,
             separate: false,
             diarize: false,
             open_when_done: true,

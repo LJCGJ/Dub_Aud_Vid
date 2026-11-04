@@ -86,6 +86,17 @@ jobs:
       - name: Build do app de desktop
         run: cargo build -p dub-app
 
+      - name: Vulkan SDK (Windows — valida o build de release)
+        if: runner.os == 'Windows'
+        uses: humbletim/install-vulkan-sdk@v1.2
+        with:
+          version: 1.3.290.0
+          cache: true
+
+      - name: Build com backends de GPU da release (Windows)
+        if: runner.os == 'Windows'
+        run: cargo build -p dub-cli --features native-vulkan,native-directml
+
       # O binário de debug já foi compilado por `cargo test`; reaproveitamos para não
       # pagar um segundo build completo (whisper.cpp + CTranslate2 + Tauri) em release.
       - name: Smoke test da CLI (pipeline com engines mock)

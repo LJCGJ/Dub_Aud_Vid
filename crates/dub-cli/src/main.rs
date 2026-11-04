@@ -51,6 +51,9 @@ struct VideoArgs {
     /// Força CPU mesmo com GPU disponível
     #[arg(long)]
     cpu: bool,
+    /// Uso do hardware: eco (metade dos núcleos, sem GPU) | balanced (deixa folga; padrão) | max
+    #[arg(long, default_value = "balanced")]
+    performance: dub_core::Performance,
 
     /// Implementação da transcrição: auto | native (whisper.cpp) | python (faster-whisper)
     #[arg(long, default_value = "auto")]
@@ -126,8 +129,12 @@ fn doctor() -> Result<()> {
     println!("  disponíveis:           {}", r.devices.join(", "));
     println!("  threads de CPU:        {}", r.cpu_threads);
     if let Some(g) = &r.gpu_name {
-        println!("  GPU:                   {g}");
+        println!("  GPU:                   {g}{}", r.gpu_vram_mb.map(|v| format!(" ({v} MB VRAM)")).unwrap_or_default());
     }
+    println!(
+        "  backends de GPU:       {}",
+        if r.gpu_backends.is_empty() { "nenhum neste build (tudo em CPU)".to_string() } else { r.gpu_backends.join(", ") }
+    );
     let print = |t: &dub_runtime::ToolStatus| println!("  {:<26} {} {}", t.name, if t.ok { "ok   " } else { "FALTA" }, t.detail);
     println!("\nFerramentas");
     r.tools.iter().for_each(print);
@@ -162,6 +169,7 @@ fn video(a: VideoArgs) -> Result<()> {
         source_lang: if a.from.is_empty() { None } else { Some(a.from) },
         target_lang: a.to,
         force_cpu: a.cpu,
+        performance: a.performance,
         engines: engines::EngineChoice {
             transcriber_impl: a.transcriber,
             whisper_model: a.whisper_model,

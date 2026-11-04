@@ -29,6 +29,9 @@ pub struct DoctorReport {
     pub devices: Vec<String>,
     pub cpu_threads: usize,
     pub gpu_name: Option<String>,
+    pub gpu_vram_mb: Option<u64>,
+    /// Backends de GPU compilados neste build (o que as engines nativas conseguem usar).
+    pub gpu_backends: Vec<String>,
     pub tools: Vec<ToolStatus>,
     pub native: Vec<ToolStatus>,
     pub native_enabled: bool,
@@ -87,6 +90,8 @@ pub fn doctor() -> DoctorReport {
         devices: b.available.iter().map(|d| d.to_string()).collect(),
         cpu_threads: b.cpu_threads,
         gpu_name: b.gpu_name,
+        gpu_vram_mb: b.gpu_vram_mb,
+        gpu_backends: compiled_gpu_backends(),
         tools,
         native,
         native_enabled,
@@ -100,6 +105,23 @@ fn tool(name: &str, r: Result<String, String>) -> ToolStatus {
         Ok(d) => ToolStatus { name: name.into(), ok: true, detail: d },
         Err(e) => ToolStatus { name: name.into(), ok: false, detail: e },
     }
+}
+
+fn compiled_gpu_backends() -> Vec<String> {
+    let mut v = Vec::new();
+    if cfg!(feature = "native-cuda") {
+        v.push("CUDA (whisper, voz, tradução)".into());
+    }
+    if cfg!(feature = "native-vulkan") {
+        v.push("Vulkan (whisper)".into());
+    }
+    if cfg!(feature = "native-directml") {
+        v.push("DirectML (voz)".into());
+    }
+    if cfg!(feature = "native-metal") {
+        v.push("Metal (whisper)".into());
+    }
+    v
 }
 
 #[cfg(feature = "native")]
