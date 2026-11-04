@@ -16,6 +16,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  VULKAN_SDK_VERSION: "1.4.363.1"
   ORT_VERSION: "1.20.1"
   # whisper.cpp em modo portátil (AVX2) em vez de -march=native do runner.
   CMAKE_TOOLCHAIN_FILE: ${{ github.workspace }}/native/cmake/ggml-portable.cmake
@@ -85,10 +86,28 @@ jobs:
       # compilar; em tempo de execução basta o driver de vídeo do usuário.
       - name: Vulkan SDK (Windows)
         if: runner.os == 'Windows'
-        uses: humbletim/install-vulkan-sdk@v1.2
+        id: vulkan-cache
+        uses: actions/cache@v4
         with:
-          version: latest
-          cache: true
+          path: C:\VulkanSDK
+          key: vulkan-sdk-windows-${{ env.VULKAN_SDK_VERSION }}
+
+      - name: Instalar Vulkan SDK (Windows)
+        if: runner.os == 'Windows' && steps.vulkan-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          # Instalador oficial do LunarG em modo silencioso (mesmo método do CI do llama.cpp).
+          Invoke-WebRequest -Uri "https://sdk.lunarg.com/sdk/download/${env:VULKAN_SDK_VERSION}/windows/vulkan_sdk.exe" -OutFile vulkan_sdk.exe
+          Start-Process -Wait -FilePath .\vulkan_sdk.exe -ArgumentList "--root C:\VulkanSDK --accept-licenses --default-answer --confirm-command install"
+          Get-ChildItem C:\VulkanSDK | Select-Object Name
+
+      - name: Variáveis do Vulkan SDK (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          echo "VULKAN_SDK=C:/VulkanSDK" >> "$GITHUB_ENV"
+          echo "C:/VulkanSDK/Bin" >> "$GITHUB_PATH"
+          ls C:/VulkanSDK/Include/vulkan/vulkan.h C:/VulkanSDK/Lib/vulkan-1.lib C:/VulkanSDK/Bin/glslc.exe
 
       # ---------- recursos compartilhados: onnxruntime, espeak-ng-data, (ffmpeg, yt-dlp) ----------
       - name: Baixar ONNX Runtime oficial
