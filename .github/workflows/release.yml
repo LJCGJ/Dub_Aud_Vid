@@ -19,6 +19,8 @@ env:
   ORT_VERSION: "1.20.1"
   # whisper.cpp em modo portátil (AVX2) em vez de -march=native do runner.
   CMAKE_TOOLCHAIN_FILE: ${{ github.workspace }}/native/cmake/ggml-portable.cmake
+  # whisper.cpp usa std::filesystem (macOS 10.15+); Apple Silicon começa no 11.0.
+  MACOSX_DEPLOYMENT_TARGET: "11.0"
 
 jobs:
   build:

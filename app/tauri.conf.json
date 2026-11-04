@@ -49,6 +49,9 @@
     },
     "linux": {
       "deb": { "depends": ["ffmpeg"] }
+    },
+    "macOS": {
+      "minimumSystemVersion": "11.0"
     }
   }
 }
