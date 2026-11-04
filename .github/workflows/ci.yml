@@ -51,15 +51,24 @@ jobs:
         shell: bash
         run: mkdir -p target/bundle-resources && touch target/bundle-resources/.keep
 
-      - name: ffmpeg (Linux/Windows)
-        if: runner.os != 'macOS'
-        uses: FedericoCarboni/setup-ffmpeg@v3
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+      # ffmpeg sem depender de actions de terceiros (que consultam a API do GitHub e
+      # esbarram no limite de requisições): apt no Linux, brew no macOS, download
+      # direto do build estático no Windows.
+      - name: ffmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y -qq ffmpeg
 
       - name: ffmpeg (macOS)
         if: runner.os == 'macOS'
         run: brew install ffmpeg
+
+      - name: ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          curl -sSL -o ff.zip "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip"
+          unzip -q ff.zip -d ff
+          echo "$(cygpath -w "$(dirname "$(find ff -name ffmpeg.exe | head -1)")")" >> "$GITHUB_PATH"
 
       - name: Verificar formatação
         run: cargo fmt --all -- --check
