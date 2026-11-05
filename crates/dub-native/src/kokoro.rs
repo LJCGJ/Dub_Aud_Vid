@@ -151,7 +151,7 @@ fn parse_npy_f32(bytes: &[u8], expected: usize) -> Result<Vec<f32>> {
     if n != expected {
         warn!(n, expected, "vozes Kokoro com tamanho inesperado");
     }
-    Ok(data.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
+    Ok(data.as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect())
 }
 
 impl Engine for KokoroSynthesizer {
