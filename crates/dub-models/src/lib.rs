@@ -9,4 +9,4 @@ pub mod catalog;
 pub mod download;
 
 pub use catalog::{catalog, defaults, find, ModelEntry};
-pub use download::{install, installed_path, status, InstallStatus, Progress};
+pub use download::{install, installed_path, status, summary, InstallStatus, Progress};

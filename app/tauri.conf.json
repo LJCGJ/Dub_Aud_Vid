@@ -48,7 +48,7 @@
       }
     },
     "linux": {
-      "deb": { "depends": ["ffmpeg"] }
+      "deb": { "depends": ["ffmpeg", "libvulkan1"] }
     },
     "macOS": {
       "minimumSystemVersion": "11.0"

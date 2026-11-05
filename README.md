@@ -9,6 +9,7 @@ PT-BR — voz dublada por cima da trilha original, áudio original mantido como
 segunda faixa e legenda embutida, como no YouTube.
 
 ```
+dub                                                 # assistente: menus com as setas (fonte, CPU/GPU, modelo, voz, saída)
 dub models download                                 # whisper medium + voz pt_BR-faber + tradutor en→pt (~1,8 GB)
 dub video "https://www.youtube.com/watch?v=..."     # 100% nativo: whisper.cpp → CTranslate2 → Piper → remux
 dub video aula.mp4 --whisper-model large-v3-turbo-q5_0 --voice pt_BR-edresson-low

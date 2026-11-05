@@ -8,3 +8,4 @@ py/*.egg-info
 !tests/fixtures/*.mp4
 .DS_Store
 target/bundle-resources/
+models/

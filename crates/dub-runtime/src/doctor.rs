@@ -51,7 +51,7 @@ pub struct DoctorReport {
 }
 
 pub fn doctor() -> DoctorReport {
-    let b = Backend::detect();
+    let b = Backend::detect().with_compiled_gpu(whisper_gpu_compiled(), tts_gpu_compiled());
     let mut tools = vec![
         tool("ffmpeg", dub_media::Ffmpeg::locate().map(|_| "encontrado".into()).map_err(|e| e.to_string())),
         tool("yt-dlp", dub_media::YtDlp::locate().map(|_| "encontrado".into()).map_err(|e| e.to_string())),
@@ -166,4 +166,14 @@ fn native_status() -> Vec<ToolStatus> {
 #[cfg(not(feature = "native"))]
 fn native_status() -> Vec<ToolStatus> {
     vec![ToolStatus { name: "engines nativas".into(), ok: false, detail: "desligadas neste build (feature 'native')".into() }]
+}
+
+/// Este build tem algum backend de GPU para o whisper.cpp?
+pub fn whisper_gpu_compiled() -> bool {
+    cfg!(any(feature = "native-cuda", feature = "native-vulkan", feature = "native-metal"))
+}
+
+/// Este build tem algum backend de GPU para o Piper (ONNX Runtime)?
+pub fn tts_gpu_compiled() -> bool {
+    cfg!(any(feature = "native-cuda", feature = "native-directml"))
 }

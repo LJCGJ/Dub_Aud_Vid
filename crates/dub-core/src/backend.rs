@@ -232,6 +232,17 @@ pub struct Backend {
     /// Como repartir CPU/GPU.
     #[serde(default)]
     pub mode: DeviceMode,
+    /// Se este build tem backend de GPU para transcrição / síntese (o runtime
+    /// informa pelas features compiladas; sem isso o plano prometeria GPU e a
+    /// engine cairia em CPU em silêncio).
+    #[serde(default = "yes")]
+    pub gpu_transcribe_compiled: bool,
+    #[serde(default = "yes")]
+    pub gpu_synthesize_compiled: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Backend {
@@ -291,7 +302,16 @@ impl Backend {
             ram_free_mb,
             performance: Performance::default(),
             mode: DeviceMode::default(),
+            gpu_transcribe_compiled: true,
+            gpu_synthesize_compiled: true,
         }
+    }
+
+    /// Informa quais etapas têm backend de GPU neste build.
+    pub fn with_compiled_gpu(mut self, transcribe: bool, synthesize: bool) -> Self {
+        self.gpu_transcribe_compiled = transcribe;
+        self.gpu_synthesize_compiled = synthesize;
+        self
     }
 
     /// Define como repartir CPU/GPU. `Cpu` remove as GPUs da lista.
@@ -319,15 +339,24 @@ impl Backend {
     /// Como `device_for`, com a justificativa (para mostrar ao usuário).
     pub fn plan_for(&self, role: Role) -> DevicePlan {
         let gpu = self.gpu_device();
+        let compiled = match role {
+            Role::Transcribe => self.gpu_transcribe_compiled,
+            Role::Synthesize => self.gpu_synthesize_compiled,
+            _ => true,
+        };
+        // Apple Silicon é "integrada" mas com memória unificada rápida: Metal
+        // vence a CPU no whisper. A regra de poupar a iGPU é para Intel/AMD.
+        let weak_igpu = self.gpu_integrated && self.gpu_kind != GpuKind::Apple;
         let (device, reason) = match (role, self.mode, gpu) {
             (Role::Translate, _, _) => (Device::Cpu, "tradução é leve na CPU e roda em paralelo com a voz".to_string()),
             (_, _, None) if !self.performance.allows_gpu() => (Device::Cpu, "modo Eco não usa GPU".to_string()),
             (_, _, None) => (Device::Cpu, "nenhuma GPU utilizável".to_string()),
             (_, DeviceMode::Cpu, _) => (Device::Cpu, "modo CPU escolhido".to_string()),
+            (_, _, Some(_)) if !compiled => (Device::Cpu, "este build não tem backend de GPU para esta etapa".to_string()),
             (_, DeviceMode::Gpu, Some(g)) => (g, "modo GPU escolhido".to_string()),
             (Role::Transcribe, DeviceMode::Split, _) => (Device::Cpu, "modo dividido: transcrição na CPU".to_string()),
             (_, DeviceMode::Split, Some(g)) => (g, "modo dividido: voz na GPU".to_string()),
-            (Role::Transcribe, DeviceMode::Auto, Some(_)) if self.gpu_integrated => {
+            (Role::Transcribe, DeviceMode::Auto, Some(_)) if weak_igpu => {
                 (Device::Cpu, "GPU integrada divide a RAM e perde da CPU no whisper; a voz fica com a GPU".to_string())
             }
             (_, DeviceMode::Auto, Some(g)) => (g, "GPU disponível".to_string()),
@@ -400,6 +429,8 @@ impl Backend {
             ram_free_mb: None,
             performance: Performance::default(),
             mode: DeviceMode::Cpu,
+            gpu_transcribe_compiled: true,
+            gpu_synthesize_compiled: true,
         }
     }
 
@@ -681,6 +712,21 @@ mod tests {
     fn auto_uses_discrete_gpu_everywhere() {
         let b = with_gpu(false);
         assert_eq!(b.device_for(Role::Transcribe), Device::Vulkan);
+        assert_eq!(b.device_for(Role::Synthesize), Device::Vulkan);
+    }
+
+    #[test]
+    fn apple_silicon_keeps_whisper_on_gpu() {
+        let mut b = with_gpu(true);
+        b.gpu_kind = GpuKind::Apple;
+        b.available = vec![Device::Metal, Device::Cpu];
+        assert_eq!(b.device_for(Role::Transcribe), Device::Metal);
+    }
+
+    #[test]
+    fn plan_respects_compiled_backends() {
+        let b = with_gpu(false).with_compiled_gpu(false, true);
+        assert_eq!(b.device_for(Role::Transcribe), Device::Cpu);
         assert_eq!(b.device_for(Role::Synthesize), Device::Vulkan);
     }
 

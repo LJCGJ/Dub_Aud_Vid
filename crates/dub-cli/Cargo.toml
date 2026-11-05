@@ -26,9 +26,11 @@ native-metal = ["dub-runtime/native-metal"]
 dub-core.workspace = true
 dub-runtime = { workspace = true, default-features = false }
 dub-models.workspace = true
+dub-media.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 indicatif.workspace = true
+dialoguer.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 crossbeam-channel.workspace = true

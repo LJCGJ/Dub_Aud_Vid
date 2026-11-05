@@ -125,7 +125,10 @@ pub enum JobEvent {
 pub fn run_video_job(req: &JobRequest, cancel: Arc<AtomicBool>, mut on_event: impl FnMut(JobEvent)) -> Result<JobResult> {
     let started = Instant::now();
     let mode = if req.force_cpu { dub_core::DeviceMode::Cpu } else { req.device_mode };
-    let backend = Backend::detect().with_performance(req.performance).with_mode(mode);
+    let backend = Backend::detect()
+        .with_performance(req.performance)
+        .with_mode(mode)
+        .with_compiled_gpu(crate::doctor::whisper_gpu_compiled(), crate::doctor::tts_gpu_compiled());
     lower_process_priority();
     on_event(JobEvent::Device {
         device: backend.preferred.to_string(),

@@ -1,4 +1,5 @@
 mod models_cmd;
+mod wizard;
 
 use dub_runtime::{engines, JobEvent, JobRequest};
 
@@ -18,13 +19,14 @@ struct Cli {
     /// Mais logs (-v info, -vv debug)
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
     verbose: u8,
+    /// Sem subcomando, abre o assistente interativo (menus com as setas).
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Dubla um vídeo local ou URL do YouTube
+    /// Dubla um vídeo local ou URL do YouTube (sem argumentos: assistente interativo)
     Video(Box<VideoArgs>),
     /// Mostra o hardware detectado e as ferramentas encontradas
     Doctor,
@@ -34,8 +36,11 @@ enum Cmd {
 
 #[derive(Args)]
 struct VideoArgs {
-    /// Caminho do vídeo ou URL
-    source: String,
+    /// Caminho do vídeo ou URL (omita para o assistente perguntar)
+    source: Option<String>,
+    /// Abre o assistente interativo mesmo com argumentos (as respostas sobrescrevem as flags)
+    #[arg(short, long)]
+    interactive: bool,
     /// Arquivo de saída (padrão: <título>.dub.pt-BR.mp4)
     #[arg(short, long)]
     out: Option<PathBuf>,
@@ -124,10 +129,42 @@ fn main() -> Result<()> {
         .init();
 
     match cli.cmd {
-        Cmd::Doctor => doctor(),
-        Cmd::Models(args) => models_cmd::run(args),
-        Cmd::Video(args) => video(*args),
+        None => {
+            // Argumentos padrão de `dub video`, preenchidos pelo assistente.
+            #[derive(Parser)]
+            struct Only {
+                #[command(flatten)]
+                v: VideoArgs,
+            }
+            let mut a = Only::parse_from(["dub"]).v;
+            apply_wizard(&mut a, None)?;
+            video(a)
+        }
+        Some(Cmd::Doctor) => doctor(),
+        Some(Cmd::Models(args)) => models_cmd::run(args),
+        Some(Cmd::Video(args)) => {
+            let mut a = *args;
+            if a.source.is_none() || a.interactive {
+                let initial = a.source.clone();
+                apply_wizard(&mut a, initial)?;
+            }
+            video(a)
+        }
     }
+}
+
+/// Preenche os argumentos com as respostas do assistente.
+fn apply_wizard(a: &mut VideoArgs, initial: Option<String>) -> Result<()> {
+    let c = wizard::run(initial)?;
+    a.source = Some(c.source);
+    a.device = c.device;
+    a.performance = c.performance;
+    a.whisper_model = c.whisper_model;
+    a.voice = Some(c.voice);
+    if a.out.is_none() {
+        a.out = c.out;
+    }
+    Ok(())
 }
 
 fn doctor() -> Result<()> {
@@ -181,7 +218,7 @@ fn doctor() -> Result<()> {
 
 fn video(a: VideoArgs) -> Result<()> {
     let req = JobRequest {
-        source: a.source,
+        source: a.source.expect("fonte definida pelo assistente ou pela linha de comando"),
         output: a.out,
         output_dir: None,
         work_dir: a.work_dir,

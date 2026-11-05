@@ -46,7 +46,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev
+          sudo apt-get install -y -qq libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libvulkan-dev glslc
 
       - name: Pasta de recursos do app (vazia no CI)
         shell: bash
@@ -115,6 +115,10 @@ jobs:
       - name: Build com backends de GPU da release (Windows)
         if: runner.os == 'Windows'
         run: cargo build -p dub-cli --features native-vulkan,native-directml
+
+      - name: Build com backends de GPU da release (Linux)
+        if: runner.os == 'Linux'
+        run: cargo build -p dub-cli --features native-vulkan
 
       # O binário de debug já foi compilado por `cargo test`; reaproveitamos para não
       # pagar um segundo build completo (whisper.cpp + CTranslate2 + Tauri) em release.
