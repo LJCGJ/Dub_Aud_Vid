@@ -102,15 +102,41 @@ function fillSelects() {
 
   const ws = $("#whisper");
   ws.innerHTML = "";
+  const rec = doctor.recommended || null;
   for (const w of doctor.models.filter((m) => m.kind === "whisper")) {
     const o = document.createElement("option");
     o.value = w.name;
-    o.textContent = (WHISPER_LABELS[w.name] || w.name) + (w.installed ? "" : "  (não baixado)");
+    const isRec = rec && rec.whisper_model.value === w.name;
+    o.textContent = (WHISPER_LABELS[w.name] || w.name) + (isRec ? " (recomendado)" : "") + (w.installed ? "" : "  (não baixado)");
+    if (isRec) o.title = rec.whisper_model.reason;
     o.disabled = !w.installed;
     ws.appendChild(o);
   }
   const installedW = doctor.models.filter((m) => m.kind === "whisper" && m.installed).map((m) => m.name);
-  ws.value = installedW.includes(settings.whisper_model) ? settings.whisper_model : installedW[0] || "";
+  const recW = rec && installedW.includes(rec.whisper_model.value) ? rec.whisper_model.value : null;
+  ws.value = installedW.includes(settings.whisper_model) ? settings.whisper_model : recW || installedW[0] || "";
+  markRecommended();
+}
+
+// "(recomendado)" nos seletores de processamento, calculado pelo hardware desta máquina.
+function markRecommended() {
+  const rec = doctor.recommended;
+  if (!rec) return;
+  const mark = (sel, value, reason) => {
+    for (const o of $(sel).options) {
+      o.textContent = o.textContent.replace(/ \(recomendado\)$/, "");
+      if (o.value === value) {
+        o.textContent += " (recomendado)";
+        o.title = reason;
+      }
+    }
+  };
+  mark("#s-device", rec.device.value, rec.device.reason);
+  mark("#s-perf", rec.performance.value, rec.performance.reason);
+  const hint = $("#rec-hint");
+  if (hint) {
+    hint.textContent = `Recomendado para esta máquina: ${rec.device.reason}; ${rec.performance.reason}; whisper ${rec.whisper_model.value} (${rec.whisper_model.reason}).`;
+  }
 }
 
 // ---------- dublar ----------

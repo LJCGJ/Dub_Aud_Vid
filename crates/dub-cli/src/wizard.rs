@@ -81,18 +81,44 @@ pub fn run(initial_source: Option<String>) -> Result<Choices> {
     } else {
         vec![(DeviceMode::Cpu, "CPU (não há GPU utilizável neste build/máquina)".into())]
     };
-    let device = pick(&theme, "Onde processar", &device_items, 0)?;
+    let rec = doc.recommended.clone();
+    let rec_mark = |yes: bool| if yes { " (recomendado)" } else { "" };
+    let device_items: Vec<(DeviceMode, String)> = device_items
+        .into_iter()
+        .map(|(d, l)| {
+            let is_rec = rec.as_ref().map(|r| r.device.value == d).unwrap_or(false);
+            (d, if is_rec { format!("{l}{} — {}", rec_mark(true), rec.as_ref().unwrap().device.reason) } else { l })
+        })
+        .collect();
+    let dev_default =
+        device_items.iter().position(|(d, _)| rec.as_ref().map(|r| r.device.value == *d).unwrap_or(false)).unwrap_or(0);
+    let device = pick(&theme, "Onde processar", &device_items, dev_default)?;
 
     // 3. Quanto do hardware usar --------------------------------------------------
-    let perf_items = vec![
-        (Performance::Balanced, "Equilibrado — deixa um núcleo livre; o PC continua usável (padrão)".to_string()),
+    let perf_items: Vec<(Performance, String)> = vec![
+        (Performance::Balanced, "Equilibrado — deixa um núcleo livre; o PC continua usável".to_string()),
         (Performance::Eco, "Econômico — metade dos núcleos, sem GPU; para notebook ou máquina compartilhada".to_string()),
         (Performance::Max, "Máximo — todos os núcleos e GPU sempre que possível".to_string()),
-    ];
-    let performance = pick(&theme, "Uso do hardware", &perf_items, 0)?;
+    ]
+    .into_iter()
+    .map(|(p, l)| {
+        let is_rec = rec.as_ref().map(|r| r.performance.value == p).unwrap_or(false);
+        (p, if is_rec { format!("{l}{} — {}", rec_mark(true), rec.as_ref().unwrap().performance.reason) } else { l })
+    })
+    .collect();
+    let perf_default =
+        perf_items.iter().position(|(p, _)| rec.as_ref().map(|r| r.performance.value == *p).unwrap_or(false)).unwrap_or(0);
+    let performance = pick(&theme, "Uso do hardware", &perf_items, perf_default)?;
 
     // 4. Modelo do whisper (só os instalados; oferece baixar) -------------------
-    let whisper_model = pick_model(&theme, dub_core::paths::ModelKind::Whisper, "Modelo de transcrição (whisper)", "medium")?;
+    let rec_model = rec.as_ref().map(|r| r.whisper_model.clone());
+    let whisper_model = pick_model(
+        &theme,
+        dub_core::paths::ModelKind::Whisper,
+        "Modelo de transcrição (whisper)",
+        rec_model.as_ref().map(|r| r.value.as_str()).unwrap_or("medium"),
+        rec_model.as_ref().map(|r| r.reason.as_str()),
+    )?;
 
     // 5. Voz ----------------------------------------------------------------------
     let voice = pick_voice(&theme)?;
@@ -130,7 +156,13 @@ fn pick<T: Copy>(theme: &ColorfulTheme, prompt: &str, items: &[(T, String)], def
 
 /// Lista o catálogo daquele tipo marcando o que já está instalado; se o usuário
 /// escolher um que falta, baixa na hora.
-fn pick_model(theme: &ColorfulTheme, kind: dub_core::paths::ModelKind, prompt: &str, preferred: &str) -> Result<String> {
+fn pick_model(
+    theme: &ColorfulTheme,
+    kind: dub_core::paths::ModelKind,
+    prompt: &str,
+    preferred: &str,
+    preferred_reason: Option<&str>,
+) -> Result<String> {
     let entries: Vec<(dub_models::ModelEntry, InstallStatus)> =
         dub_models::summary().into_iter().find(|(k, _)| *k == kind).map(|(_, v)| v).unwrap_or_default();
     if entries.is_empty() {
@@ -147,15 +179,19 @@ fn pick_model(theme: &ColorfulTheme, kind: dub_core::paths::ModelKind, prompt: &
                 InstallStatus::Installed(_) => String::new(),
                 InstallStatus::Missing => format!("  [baixar {} MB]", m.total_mb()),
             };
-            format!("{mark} {:<28} {}{extra}", m.name, m.description)
+            let rec = if m.name == preferred {
+                format!(" (recomendado){}", preferred_reason.map(|r| format!(" — {r}")).unwrap_or_default())
+            } else {
+                String::new()
+            };
+            format!("{mark} {:<28} {}{rec}{extra}", m.name, m.description)
         })
         .collect();
-    // Padrão: o preferido se instalado; senão o primeiro instalado; senão o preferido.
+    // Padrão: o recomendado (instalado ou não — ele baixa), senão o primeiro instalado.
     let default = entries
         .iter()
-        .position(|(m, st)| m.name == preferred && matches!(st, InstallStatus::Installed(_)))
+        .position(|(m, _)| m.name == preferred)
         .or_else(|| entries.iter().position(|(_, st)| matches!(st, InstallStatus::Installed(_))))
-        .or_else(|| entries.iter().position(|(m, _)| m.name == preferred))
         .unwrap_or(0);
     let i = Select::with_theme(theme).with_prompt(prompt).items(&labels).default(default).interact()?;
     let (entry, status) = &entries[i];

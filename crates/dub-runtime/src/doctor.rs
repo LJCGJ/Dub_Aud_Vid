@@ -43,6 +43,8 @@ pub struct DoctorReport {
     /// Vozes conhecidas (automática, Kokoro, Piper) e se estão instaladas.
     #[serde(default)]
     pub voices: Vec<crate::voices::VoiceInfo>,
+    /// Recomendações calculadas para esta máquina.
+    pub recommended: Option<crate::recommend::Recommendations>,
     /// Backends de GPU compilados neste build (o que as engines nativas conseguem usar).
     pub gpu_backends: Vec<String>,
     pub tools: Vec<ToolStatus>,
@@ -109,6 +111,7 @@ pub fn doctor() -> DoctorReport {
         ram_free_mb: b.ram_free_mb,
         plan: b.plan(),
         voices: crate::voices::list(),
+        recommended: Some(crate::recommend::recommend(&b)),
         gpu_backends: compiled_gpu_backends(),
         tools,
         native,

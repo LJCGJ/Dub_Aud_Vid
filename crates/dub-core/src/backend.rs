@@ -284,6 +284,13 @@ impl Backend {
         if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
             available.push(Device::Metal);
         }
+        // Loader do Vulkan/DirectML presente não quer dizer placa presente
+        // (contêineres e VMs têm o loader sem GPU). Sem um nome de GPU vindo
+        // de uma sonda real, fica só a CPU — senão o plano prometeria GPU e a
+        // engine cairia em CPU em silêncio.
+        if gpu_name.is_none() && gpu_kind != GpuKind::Apple {
+            available.retain(|d| !d.is_gpu());
+        }
         available.push(Device::Cpu);
 
         let cpu_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);

@@ -9,6 +9,7 @@
 pub mod doctor;
 pub mod engines;
 pub mod job;
+pub mod recommend;
 pub mod voices;
 
 pub use doctor::{doctor, DoctorReport, ToolStatus};

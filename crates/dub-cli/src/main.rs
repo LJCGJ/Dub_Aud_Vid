@@ -200,6 +200,13 @@ fn doctor() -> Result<()> {
     for p in &r.plan {
         println!("    {:<22} → {:<9} {}", p.role.label(), p.device.to_string(), p.reason);
     }
+    if let Some(rec) = &r.recommended {
+        println!("  recomendado para esta máquina:");
+        println!("    onde processar:        {} — {}", rec.device.value, rec.device.reason);
+        println!("    uso do hardware:       {:?} — {}", rec.performance.value, rec.performance.reason);
+        println!("    modelo do whisper:     {} — {}", rec.whisper_model.value, rec.whisper_model.reason);
+        println!("    voz:                   {} — {}", rec.voice.value, rec.voice.reason);
+    }
     let print = |t: &dub_runtime::ToolStatus| println!("  {:<26} {} {}", t.name, if t.ok { "ok   " } else { "FALTA" }, t.detail);
     println!("\nFerramentas");
     r.tools.iter().for_each(print);
