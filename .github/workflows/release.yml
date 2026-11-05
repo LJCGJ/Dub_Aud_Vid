@@ -166,6 +166,21 @@ jobs:
       - name: Tauri CLI
         run: npm install -g @tauri-apps/cli@^2
 
+      - name: Versão do app = versão da tag
+        shell: bash
+        run: |
+          # A tag v0.1.1 manda: o instalador sai como Dub_0.1.1_… mesmo que
+          # alguém esqueça de subir a versão no tauri.conf.json.
+          VER="${GITHUB_REF_NAME#v}"
+          python - "$VER" <<'PY'
+          import json, sys
+          p = "app/tauri.conf.json"
+          c = json.load(open(p, encoding="utf-8"))
+          print("tauri.conf.json:", c["version"], "->", sys.argv[1])
+          c["version"] = sys.argv[1]
+          json.dump(c, open(p, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+          PY
+
       - name: Build do app (sem instalador)
         shell: bash
         run: |

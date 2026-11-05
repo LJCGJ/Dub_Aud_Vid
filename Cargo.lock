@@ -1115,7 +1115,7 @@ dependencies = [
 
 [[package]]
 name = "dub-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "dub-core",
@@ -1133,7 +1133,7 @@ dependencies = [
 
 [[package]]
 name = "dub-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1151,7 +1151,7 @@ dependencies = [
 
 [[package]]
 name = "dub-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -1165,7 +1165,7 @@ dependencies = [
 
 [[package]]
 name = "dub-engines-py"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "dub-core",
@@ -1177,7 +1177,7 @@ dependencies = [
 
 [[package]]
 name = "dub-input-video"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "dub-core",
@@ -1188,7 +1188,7 @@ dependencies = [
 
 [[package]]
 name = "dub-media"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "dub-core",
@@ -1201,7 +1201,7 @@ dependencies = [
 
 [[package]]
 name = "dub-models"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "dub-core",
@@ -1216,7 +1216,7 @@ dependencies = [
 
 [[package]]
 name = "dub-native"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "ct2rs",
@@ -1235,7 +1235,7 @@ dependencies = [
 
 [[package]]
 name = "dub-runtime"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
