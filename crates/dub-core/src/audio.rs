@@ -117,6 +117,80 @@ impl AudioBuffer {
         AudioBuffer::new(target_sr, out)
     }
 
+    /// Frequência fundamental mediana (Hz) dos quadros com voz, pelo método
+    /// YIN (diferença normalizada cumulativa, limiar 0,15 — evita o erro de
+    /// oitava da autocorrelação simples). `None` se não há quadros vozeados o
+    /// bastante. Serve para estimar se a voz é masculina ou feminina.
+    pub fn median_f0(&self) -> Option<f32> {
+        let sr = self.sample_rate as f32;
+        let w = (sr * 0.04) as usize; // 40 ms
+        let tau_min = (sr / 400.0) as usize;
+        let tau_max = (sr / 60.0) as usize;
+        if self.samples.len() < w + tau_max + 1 {
+            return None;
+        }
+        let mut f0s: Vec<f32> = Vec::new();
+        let mut d = vec![0.0f32; tau_max + 1];
+        let mut i = 0;
+        while i + w + tau_max < self.samples.len() {
+            let x = &self.samples[i..i + w + tau_max];
+            i += w / 2;
+            let rms = (x[..w].iter().map(|v| v * v).sum::<f32>() / w as f32).sqrt();
+            if rms < 0.02 {
+                continue;
+            }
+            // d(τ) = Σ (x[k] − x[k+τ])²
+            #[allow(clippy::needless_range_loop)]
+            for tau in 1..=tau_max {
+                let mut acc = 0.0f32;
+                for k in 0..w {
+                    let diff = x[k] - x[k + tau];
+                    acc += diff * diff;
+                }
+                d[tau] = acc;
+            }
+            // d'(τ) = d(τ) · τ / Σ_{1..τ} d
+            let mut cum = 0.0f32;
+            let mut best: Option<usize> = None;
+            let mut dp_prev = f32::MAX;
+            for (tau, &dt) in d.iter().enumerate().skip(1) {
+                cum += dt;
+                let dp = if cum > 0.0 { dt * tau as f32 / cum } else { 1.0 };
+                if tau >= tau_min {
+                    if best.is_some() {
+                        // segue o vale até o mínimo local
+                        if dp < dp_prev {
+                            best = Some(tau);
+                        } else {
+                            break;
+                        }
+                    } else if dp < 0.15 {
+                        best = Some(tau);
+                    }
+                }
+                dp_prev = dp;
+            }
+            if let Some(tau) = best {
+                f0s.push(sr / tau as f32);
+            }
+        }
+        if f0s.len() < 5 {
+            return None;
+        }
+        f0s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        Some(f0s[f0s.len() / 2])
+    }
+
+    /// Recorta `[start, end)` em segundos.
+    pub fn slice_seconds(&self, start: f64, end: f64) -> AudioBuffer {
+        let sr = self.sample_rate as f64;
+        let a = ((start.max(0.0)) * sr) as usize;
+        let b = ((end.max(start)) * sr) as usize;
+        let a = a.min(self.samples.len());
+        let b = b.min(self.samples.len());
+        AudioBuffer::new(self.sample_rate, self.samples[a..b].to_vec())
+    }
+
     /// *Ducking*: abaixa o volume para `gain` dentro de cada janela
     /// `(início, fim)` em segundos, com rampas de `fade` segundos nas bordas
     /// para não estalar. Fora das janelas o áudio fica intacto. Usado para
@@ -193,6 +267,21 @@ mod tests {
         assert_eq!(a.samples[280], 1.0); // depois
         let edge = a.samples[95]; // meio da rampa de entrada
         assert!(edge > 0.25 && edge < 1.0, "rampa: {edge}");
+    }
+
+    #[test]
+    fn f0_of_pure_tones() {
+        let sr = 16_000u32;
+        let tone = |f: f32| {
+            AudioBuffer::new(sr, (0..sr).map(|i| (2.0 * std::f32::consts::PI * f * i as f32 / sr as f32).sin() * 0.5).collect())
+        };
+        let m = tone(120.0).median_f0().unwrap();
+        let f = tone(220.0).median_f0().unwrap();
+        assert!((m - 120.0).abs() < 8.0, "{m}");
+        assert!((f - 220.0).abs() < 12.0, "{f}");
+        assert_eq!(crate::Gender::from_f0(m), crate::Gender::Male);
+        assert_eq!(crate::Gender::from_f0(f), crate::Gender::Female);
+        assert!(AudioBuffer::silence(sr, 1.0).median_f0().is_none());
     }
 
     #[test]

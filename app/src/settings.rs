@@ -37,7 +37,7 @@ impl Default for Settings {
         Self {
             output_dir: None,
             whisper_model: "medium".into(),
-            voice: "pt_BR-faber-medium".into(),
+            voice: "auto".into(),
             translator_model: None,
             source_lang: "en".into(),
             target_lang: "pt-BR".into(),
@@ -106,7 +106,7 @@ pub fn export_resource_env(res: &Path) {
     // o dub_core::paths cai para %LOCALAPPDATA%\dub quando não consegue gravar.
     if std::env::var_os("DUB_MODELS_DIR").is_none() && res.join("models").is_dir() {
         // Só usa como pasta de modelos se já houver algo nela (bundle com modelos).
-        let has_any = ["whisper", "voices", "translate"]
+        let has_any = ["whisper", "voices", "translate", "separate", "kokoro"]
             .iter()
             .any(|k| std::fs::read_dir(res.join("models").join(k)).map(|mut d| d.next().is_some()).unwrap_or(false));
         if has_any {

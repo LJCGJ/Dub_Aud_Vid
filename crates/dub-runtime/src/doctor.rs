@@ -40,6 +40,9 @@ pub struct DoctorReport {
     /// Plano automático: onde cada etapa rodaria com as configurações padrão.
     #[serde(default)]
     pub plan: Vec<dub_core::DevicePlan>,
+    /// Vozes conhecidas (automática, Kokoro, Piper) e se estão instaladas.
+    #[serde(default)]
+    pub voices: Vec<crate::voices::VoiceInfo>,
     /// Backends de GPU compilados neste build (o que as engines nativas conseguem usar).
     pub gpu_backends: Vec<String>,
     pub tools: Vec<ToolStatus>,
@@ -105,6 +108,7 @@ pub fn doctor() -> DoctorReport {
         ram_total_mb: b.ram_total_mb,
         ram_free_mb: b.ram_free_mb,
         plan: b.plan(),
+        voices: crate::voices::list(),
         gpu_backends: compiled_gpu_backends(),
         tools,
         native,

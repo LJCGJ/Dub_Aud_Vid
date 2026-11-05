@@ -131,6 +131,8 @@ pub fn start_dub(app: AppHandle, state: State<'_, AppState>, args: StartArgs) ->
             translator_model: s.translator_model.clone(),
             separate: s.separate,
             separator_model: None,
+            voice_male: None,
+            voice_female: None,
             diarize: s.diarize,
             ..EngineChoice::default()
         },

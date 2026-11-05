@@ -70,6 +70,7 @@ fn kind_title(k: ModelKind) -> &'static str {
         ModelKind::Voice => "Vozes (Piper)",
         ModelKind::Translate => "Tradução (CTranslate2)",
         ModelKind::Separate => "Separação voz/instrumental (MDX-Net)",
+        ModelKind::Kokoro => "Vozes Kokoro (feminina pf_dora, masculinas pm_alex/pm_santa)",
     }
 }
 

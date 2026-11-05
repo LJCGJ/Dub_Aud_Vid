@@ -55,6 +55,19 @@ pub trait Synthesizer: Engine {
     /// devolvem 1.0 e deixam o time-fit para o pipeline.
     fn synthesize(&self, text: &str, lang: &Lang, speaker_ref: Option<&Path>, speed: f32) -> Result<AudioBuffer>;
 
+    /// Como `synthesize`, com o segmento à mão (gênero estimado, falante) para
+    /// engines que escolhem a voz por trecho. O padrão ignora o segmento.
+    fn synthesize_segment(
+        &self,
+        _segment: &Segment,
+        text: &str,
+        lang: &Lang,
+        speaker_ref: Option<&Path>,
+        speed: f32,
+    ) -> Result<AudioBuffer> {
+        self.synthesize(text, lang, speaker_ref, speed)
+    }
+
     /// Se `true`, o pipeline passa `speaker_ref`; senão não perde tempo extraindo.
     fn supports_voice_cloning(&self) -> bool {
         false

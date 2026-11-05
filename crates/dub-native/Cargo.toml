@@ -8,7 +8,7 @@ description = "Engines nativas (Rust + C++): time-stretch WSOLA, whisper.cpp, Pi
 build = "build.rs"
 
 [features]
-default = ["whisper", "piper", "translate", "separate"]
+default = ["whisper", "piper", "translate", "separate", "kokoro"]
 # Transcrição com whisper.cpp (vendorizado pelo whisper-rs; compila com cmake).
 whisper = ["dep:whisper-rs"]
 # Aceleração do whisper.cpp — escolha UMA conforme a máquina de build.
@@ -20,6 +20,8 @@ whisper-metal = ["whisper", "whisper-rs/metal"]
 piper = ["dep:ort", "dep:espeak-rs-sys", "dep:unicode-normalization"]
 # Separação voz/instrumental com MDX-Net (modelos do UVR em ONNX) no mesmo ONNX Runtime.
 separate = ["piper", "dep:realfft", "dep:hound"]
+# Síntese Kokoro (82M, vozes femininas e masculinas em pt-BR) no mesmo ONNX Runtime.
+kokoro = ["piper", "dep:zip"]
 # Execution providers do ONNX Runtime (exigem a build correspondente da onnxruntime.dll).
 ort-cuda = ["piper", "ort/cuda"]
 ort-directml = ["piper", "ort/directml"]
@@ -40,6 +42,7 @@ ort = { version = "=2.0.0-rc.15", default-features = false, features = ["load-dy
 espeak-rs-sys = { version = "0.2", optional = true }
 unicode-normalization = { version = "0.1", optional = true }
 realfft = { workspace = true, optional = true }
+zip = { version = "2", default-features = false, features = ["deflate"], optional = true }
 hound = { workspace = true, optional = true }
 ct2rs = { version = "0.10", default-features = false, features = ["ruy", "sentencepiece"], optional = true }
 

@@ -181,6 +181,8 @@ dub video <arquivo|url> [opções]
   --no-subtitles           não embutir SRT
   --background-gain 0.9    volume do fundo
   --max-speed 1.35         aceleração máxima da fala
+  --voice auto             auto (♂/♀ por trecho) | pt_BR-faber-medium… (Piper) | pf_dora, pm_alex, pm_santa (Kokoro)
+  --voice-male / --voice-female   vozes usadas pelo modo auto (padrão: faber / pf_dora)
   --device auto            auto | cpu | gpu | split (onde cada etapa roda)
   --performance balanced   eco | balanced | max (quanto do hardware usar)
   -v / -vv                 logs
@@ -190,6 +192,14 @@ Arquivos intermediários ficam em `dub_work/<título>/` (áudio extraído, voz e
 fundo separados, cada segmento sintetizado, `dub_mix.wav`, e duas legendas:
 `dub.srt` com a tradução e `dub.src.srt` com o texto reconhecido no idioma
 original — útil para ver se um erro nasceu no ouvido ou na tradução).
+
+**Voz masculina ou feminina, automaticamente (padrão):** as quatro vozes
+pt-BR do Piper são masculinas; a voz feminina vem do **Kokoro** (82M, ONNX, no
+mesmo ONNX Runtime — `pf_dora`; também `pm_alex`/`pm_santa`). Com
+`--voice auto`, o pipeline estima o tom (f0, método YIN) de cada trecho na voz
+isolada — abaixo de 165 Hz masculino, acima feminino — e, com diarização, vota
+por falante para a voz não trocar no meio de uma fala. O modelo Kokoro
+(197 MB) faz parte do conjunto padrão.
 
 **Separação voz/instrumental (padrão):** o modelo MDX-Net `Kim_Vocal_2` (do
 Ultimate Vocal Remover, em ONNX, no mesmo ONNX Runtime do Piper — CPU ou GPU)

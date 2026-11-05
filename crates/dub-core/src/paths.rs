@@ -19,6 +19,8 @@ pub enum ModelKind {
     Translate,
     /// Separação voz/instrumental (MDX-Net).
     Separate,
+    /// Modelo + vozes do Kokoro.
+    Kokoro,
 }
 
 impl ModelKind {
@@ -28,10 +30,11 @@ impl ModelKind {
             ModelKind::Voice => "voices",
             ModelKind::Translate => "translate",
             ModelKind::Separate => "separate",
+            ModelKind::Kokoro => "kokoro",
         }
     }
-    pub fn all() -> [ModelKind; 4] {
-        [ModelKind::Whisper, ModelKind::Voice, ModelKind::Translate, ModelKind::Separate]
+    pub fn all() -> [ModelKind; 5] {
+        [ModelKind::Whisper, ModelKind::Voice, ModelKind::Translate, ModelKind::Separate, ModelKind::Kokoro]
     }
 }
 

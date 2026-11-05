@@ -23,4 +23,4 @@ pub use backend::{Backend, Device, DeviceMode, DevicePlan, GpuFit, GpuKind, Perf
 pub use engines::{Diarizer, EngineSet, Separator, Synthesizer, Transcriber, Translator};
 pub use error::{DubError, Result};
 pub use pipeline::{DubJob, Pipeline, PipelineConfig, Progress, Stage};
-pub use segment::{Lang, Segment, Speaker};
+pub use segment::{Gender, Lang, Segment, Speaker};

@@ -31,6 +31,32 @@ impl From<&str> for Lang {
     }
 }
 
+/// Gênero da voz original, estimado pelo tom (f0) do trecho isolado.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Gender {
+    Male,
+    Female,
+}
+
+impl Gender {
+    /// Classifica pela frequência fundamental mediana: vozes masculinas
+    /// costumam ficar em 85–155 Hz e femininas em 165–255 Hz.
+    pub fn from_f0(f0_hz: f32) -> Gender {
+        if f0_hz < 165.0 {
+            Gender::Male
+        } else {
+            Gender::Female
+        }
+    }
+    pub fn label_pt(self) -> &'static str {
+        match self {
+            Gender::Male => "masculina",
+            Gender::Female => "feminina",
+        }
+    }
+}
+
 /// Identificador de falante produzido pela diarização.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Speaker(pub String);
@@ -53,6 +79,9 @@ pub struct Segment {
     pub end: f64,
     /// Falante (preenchido pela diarização; `None` se desligada).
     pub speaker: Option<Speaker>,
+    /// Gênero estimado da voz original (para escolher a voz da dublagem).
+    #[serde(default)]
+    pub gender: Option<Gender>,
     /// Trecho tem sobreposição de falas detectada.
     pub overlapped: bool,
     /// Texto no idioma original.
@@ -72,6 +101,7 @@ impl Segment {
             start,
             end,
             speaker: None,
+            gender: None,
             overlapped: false,
             source_text: source_text.into(),
             target_text: None,

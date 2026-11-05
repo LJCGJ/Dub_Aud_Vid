@@ -95,7 +95,7 @@ pub fn run(initial_source: Option<String>) -> Result<Choices> {
     let whisper_model = pick_model(&theme, dub_core::paths::ModelKind::Whisper, "Modelo de transcrição (whisper)", "medium")?;
 
     // 5. Voz ----------------------------------------------------------------------
-    let voice = pick_model(&theme, dub_core::paths::ModelKind::Voice, "Voz da dublagem", "pt_BR-faber-medium")?;
+    let voice = pick_voice(&theme)?;
 
     // 6. Saída --------------------------------------------------------------------
     let default_out = default_output_name(&source);
@@ -160,23 +160,66 @@ fn pick_model(theme: &ColorfulTheme, kind: dub_core::paths::ModelKind, prompt: &
     let i = Select::with_theme(theme).with_prompt(prompt).items(&labels).default(default).interact()?;
     let (entry, status) = &entries[i];
     if matches!(status, InstallStatus::Missing) {
-        eprintln!("▶ baixando {} ({} MB)…", entry.name, entry.total_mb());
-        let bar = indicatif::ProgressBar::new(0);
-        bar.set_style(
-            indicatif::ProgressStyle::with_template("{msg:<28} [{bar:30}] {bytes}/{total_bytes} {bytes_per_sec}")
-                .unwrap()
-                .progress_chars("=> "),
-        );
-        dub_models::install(entry, |p| {
-            if let Some(t) = p.total {
-                bar.set_length(t);
-            }
-            bar.set_position(p.downloaded);
-            bar.set_message(p.file.clone());
-        })?;
-        bar.finish_and_clear();
+        download_entry(entry)?;
     }
     Ok(entry.name.clone())
+}
+
+/// Menu de vozes: automática (masculina/feminina por trecho) primeiro, depois
+/// Kokoro e Piper com ♀/♂, marcando instaladas e baixando o que faltar.
+fn pick_voice(theme: &ColorfulTheme) -> Result<String> {
+    let voices = dub_runtime::voices::list();
+    let labels: Vec<String> = voices
+        .iter()
+        .map(|v| {
+            let mark = match v.gender.as_str() {
+                "feminina" => "♀",
+                "masculina" => "♂",
+                _ => "⚥",
+            };
+            let st = if v.installed { "✔" } else { " " };
+            let extra = if v.installed { String::new() } else { format!("  [baixar {} MB]", v.download_mb) };
+            let rec = if v.name == dub_runtime::voices::AUTO_VOICE { " (recomendado)" } else { "" };
+            format!("{st} {mark} {:<20}{rec} {}{extra}", v.name, v.description)
+        })
+        .collect();
+    let i = Select::with_theme(theme).with_prompt("Voz da dublagem").items(&labels).default(0).interact()?;
+    let chosen = &voices[i];
+    // "auto" precisa das duas vozes padrão; uma voz específica precisa dela mesma.
+    let needed: Vec<&str> = if chosen.name == dub_runtime::voices::AUTO_VOICE {
+        vec![dub_runtime::voices::DEFAULT_MALE_VOICE, dub_runtime::voices::DEFAULT_FEMALE_VOICE]
+    } else {
+        vec![chosen.name.as_str()]
+    };
+    for name in needed {
+        let installed = voices.iter().any(|v| v.name == name && v.installed);
+        if installed {
+            continue;
+        }
+        if let Some(entry) = dub_runtime::voices::catalog_entry_for(name) {
+            download_entry(&entry)?;
+        }
+    }
+    Ok(chosen.name.clone())
+}
+
+fn download_entry(entry: &dub_models::ModelEntry) -> Result<()> {
+    eprintln!("▶ baixando {} ({} MB)…", entry.name, entry.total_mb());
+    let bar = indicatif::ProgressBar::new(0);
+    bar.set_style(
+        indicatif::ProgressStyle::with_template("{msg:<28} [{bar:30}] {bytes}/{total_bytes} {bytes_per_sec}")
+            .unwrap()
+            .progress_chars("=> "),
+    );
+    dub_models::install(entry, |p| {
+        if let Some(t) = p.total {
+            bar.set_length(t);
+        }
+        bar.set_position(p.downloaded);
+        bar.set_message(p.file.clone());
+    })?;
+    bar.finish_and_clear();
+    Ok(())
 }
 
 fn short_role(r: Role) -> &'static str {

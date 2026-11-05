@@ -36,3 +36,10 @@ pub use translate::Ct2Translator;
 pub mod separate;
 #[cfg(feature = "separate")]
 pub use separate::MdxSeparator;
+
+#[cfg(feature = "kokoro")]
+pub mod kokoro;
+#[cfg(feature = "kokoro")]
+mod kokoro_vocab;
+#[cfg(feature = "kokoro")]
+pub use kokoro::KokoroSynthesizer;

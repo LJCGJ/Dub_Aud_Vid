@@ -22,7 +22,13 @@ const VOICE_LABELS = {
   "pt_BR-cadu-medium": "Cadu — masculina",
   "pt_BR-jeff-medium": "Jeff — masculina",
 };
-const KIND_TITLES = { whisper: "Reconhecimento de fala (whisper.cpp)", voices: "Vozes (Piper)", translate: "Tradução (CTranslate2)" };
+const KIND_TITLES = {
+  whisper: "Reconhecimento de fala (whisper.cpp)",
+  voices: "Vozes masculinas (Piper)",
+  kokoro: "Vozes Kokoro (feminina pf_dora, masculinas pm_alex/pm_santa)",
+  translate: "Tradução (CTranslate2)",
+  separate: "Separação voz/instrumental (MDX-Net)",
+};
 
 let settings = null;
 let doctor = null;
@@ -80,17 +86,19 @@ function renderReadiness() {
 }
 
 function fillSelects() {
-  const voices = doctor.models.filter((m) => m.kind === "voices");
+  const voices = doctor.voices || [];
   const vs = $("#voice");
   vs.innerHTML = "";
   for (const v of voices) {
     const o = document.createElement("option");
     o.value = v.name;
-    o.textContent = (VOICE_LABELS[v.name] || v.name) + (v.installed ? "" : "  (não baixada)");
+    const mark = v.gender === "feminina" ? "♀ " : v.gender === "masculina" ? "♂ " : "";
+    const rec = v.name === "auto" ? " (recomendado)" : "";
+    o.textContent = `${mark}${v.name}${rec} — ${v.description}` + (v.installed ? "" : `  (baixar ${v.download_mb} MB na aba Modelos)`);
     o.disabled = !v.installed;
     vs.appendChild(o);
   }
-  vs.value = voices.some((v) => v.name === settings.voice && v.installed) ? settings.voice : (voices.find((v) => v.installed) || {}).name || "";
+  vs.value = voices.some((v) => v.name === settings.voice && v.installed) ? settings.voice : "auto";
 
   const ws = $("#whisper");
   ws.innerHTML = "";
@@ -283,7 +291,7 @@ async function refreshModels() {
   list.innerHTML = "";
   const inst = doctor.models.find((m) => m.installed && m.path);
   $("#models-path").textContent = inst ? inst.path.replace(/[\\/][^\\/]+[\\/][^\\/]+$/, "") : "~/.cache/dub";
-  for (const kind of ["whisper", "translate", "voices"]) {
+  for (const kind of ["whisper", "translate", "voices", "kokoro", "separate"]) {
     const g = document.createElement("div");
     g.className = "model-group";
     g.innerHTML = `<h2>${KIND_TITLES[kind]}</h2>`;

@@ -47,6 +47,11 @@ pub struct EngineChoice {
     /// Modelo de separação: nome do catálogo MDX-Net, caminho .onnx ou "demucs" (Python).
     #[serde(default)]
     pub separator_model: Option<String>,
+    /// Com `voice = "auto"`: vozes usadas para trechos masculinos/femininos.
+    #[serde(default)]
+    pub voice_male: Option<String>,
+    #[serde(default)]
+    pub voice_female: Option<String>,
     pub diarize: bool,
     pub mock: bool,
 }
@@ -60,7 +65,9 @@ impl Default for EngineChoice {
             translator_model: None,
             tts: "piper".into(),
             tts_impl: Impl::Auto,
-            voice: Some("pt_BR-faber-medium".into()),
+            voice: Some(crate::voices::AUTO_VOICE.into()),
+            voice_male: None,
+            voice_female: None,
             separate: true,
             separator_model: None,
             diarize: false,
@@ -173,27 +180,58 @@ pub fn build(choice: &EngineChoice, backend: &Backend, work_dir: &Path) -> Resul
     };
 
     // --- Síntese -----------------------------------------------------------
-    let synthesizer: Arc<dyn Synthesizer> = if choice.tts == "piper" {
-        match choice.tts_impl {
-            Impl::Python => python_tts(&py(&mut py_env)?, choice, gpu, work_dir)?,
-            Impl::Native => native_piper(choice, gpu, cpu_threads)
-                .context("síntese nativa (Piper/ONNX Runtime)")?
-                .ok_or_else(|| anyhow!("síntese nativa indisponível: compile com a feature 'native'"))
-                .inspect(|_| native_roles.push("synthesizer"))?,
-            Impl::Auto => match native_piper(choice, gpu, cpu_threads) {
-                Ok(Some(s)) => {
-                    native_roles.push("synthesizer");
-                    s
+    // Resolve uma voz pelo nome: Kokoro (pf_dora…), Piper (pt_BR-…) ou engine Python.
+    let resolve_voice =
+        |voice: &str, py_env: &mut Option<PythonEnv>, native_roles: &mut Vec<&'static str>| -> Result<Arc<dyn Synthesizer>> {
+            let mut c = choice.clone();
+            c.voice = Some(voice.to_string());
+            if crate::voices::is_kokoro_voice(voice) && choice.tts != "kokoro-py" {
+                return native_kokoro(voice, gpu, cpu_threads)
+                    .context("síntese nativa (Kokoro/ONNX Runtime)")?
+                    .ok_or_else(|| anyhow!("Kokoro nativo indisponível: compile com a feature 'native'"))
+                    .inspect(|_| native_roles.push("synthesizer"));
+            }
+            if choice.tts == "piper" || choice.tts == "auto" {
+                match choice.tts_impl {
+                    Impl::Python => python_tts(&py(py_env)?, &c, gpu, work_dir),
+                    Impl::Native => native_piper(&c, gpu, cpu_threads)
+                        .context("síntese nativa (Piper/ONNX Runtime)")?
+                        .ok_or_else(|| anyhow!("síntese nativa indisponível: compile com a feature 'native'"))
+                        .inspect(|_| native_roles.push("synthesizer")),
+                    Impl::Auto => match native_piper(&c, gpu, cpu_threads) {
+                        Ok(Some(s)) => {
+                            native_roles.push("synthesizer");
+                            Ok(s)
+                        }
+                        Ok(None) => python_tts(&py(py_env)?, &c, gpu, work_dir),
+                        Err(e) => {
+                            info!("Piper nativo indisponível ({e}); usando Piper em Python");
+                            python_tts(&py(py_env)?, &c, gpu, work_dir)
+                        }
+                    },
                 }
-                Ok(None) => python_tts(&py(&mut py_env)?, choice, gpu, work_dir)?,
-                Err(e) => {
-                    info!("Piper nativo indisponível ({e}); usando Piper em Python");
-                    python_tts(&py(&mut py_env)?, choice, gpu, work_dir)?
-                }
-            },
-        }
+            } else {
+                python_tts(&py(py_env)?, &c, gpu, work_dir)
+            }
+        };
+    let voice_name = choice.voice.clone().unwrap_or_else(|| crate::voices::AUTO_VOICE.to_string());
+    let synthesizer: Arc<dyn Synthesizer> = if voice_name == crate::voices::AUTO_VOICE {
+        let male_name = choice.voice_male.clone().unwrap_or_else(|| crate::voices::DEFAULT_MALE_VOICE.into());
+        let female_name = choice.voice_female.clone().unwrap_or_else(|| crate::voices::DEFAULT_FEMALE_VOICE.into());
+        let male = resolve_voice(&male_name, &mut py_env, &mut native_roles)?;
+        let female = match resolve_voice(&female_name, &mut py_env, &mut native_roles) {
+            Ok(f) => f,
+            Err(e) => {
+                warn!(
+                    "voz feminina '{female_name}' indisponível ({e}); usando a masculina para todos os trechos (rode `dub models download kokoro-v1.0`)"
+                );
+                male.clone()
+            }
+        };
+        native_roles.dedup();
+        Arc::new(crate::voices::GenderRouter { male, female, male_name, female_name })
     } else {
-        python_tts(&py(&mut py_env)?, choice, gpu, work_dir)?
+        resolve_voice(&voice_name, &mut py_env, &mut native_roles)?
     };
 
     // --- Opcionais: falha neles não derruba o trabalho, só avisa -----------
@@ -351,6 +389,17 @@ fn native_piper(choice: &EngineChoice, gpu: Device, threads: usize) -> Result<Op
 
 #[cfg(not(feature = "native"))]
 fn native_piper(_: &EngineChoice, _: Device, _: usize) -> Result<Option<Arc<dyn Synthesizer>>> {
+    Ok(None)
+}
+
+#[cfg(feature = "native")]
+fn native_kokoro(voice: &str, gpu: Device, threads: usize) -> Result<Option<Arc<dyn Synthesizer>>> {
+    let s = dub_native::KokoroSynthesizer::load(voice, gpu, threads)?;
+    Ok(Some(Arc::new(s)))
+}
+
+#[cfg(not(feature = "native"))]
+fn native_kokoro(_: &str, _: Device, _: usize) -> Result<Option<Arc<dyn Synthesizer>>> {
     Ok(None)
 }
 

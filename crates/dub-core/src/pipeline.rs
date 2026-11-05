@@ -94,6 +94,9 @@ pub struct PipelineConfig {
     pub separate: bool,
     /// Usar diarização se houver `Diarizer`.
     pub diarize: bool,
+    /// Estimar se cada voz original é masculina ou feminina (pelo tom), para
+    /// engines que escolhem a voz da dublagem por trecho/falante.
+    pub detect_gender: bool,
     /// Volume do fundo original na mixagem final (0..1).
     pub background_gain: f32,
     /// Sem separador de voz/fundo, o áudio original inteiro vira o fundo e é
@@ -118,6 +121,7 @@ impl Default for PipelineConfig {
             translate_batch: 8,
             separate: true,
             diarize: true,
+            detect_gender: true,
             background_gain: 0.9,
             duck_gain: 0.2,
             voice_gain: 1.0,
@@ -268,6 +272,23 @@ impl Pipeline {
             return Err(DubError::Audio("nenhuma fala detectada".into()));
         }
 
+        // 3b. Gênero da voz original ------------------------------------------
+        if self.config.detect_gender {
+            match AudioBuffer::read_wav(&voice_path) {
+                Ok(voice) => {
+                    estimate_genders(&mut segments, &voice);
+                    let (m, f) = segments.iter().fold((0, 0), |(m, f), s| match s.gender {
+                        Some(crate::Gender::Male) => (m + 1, f),
+                        Some(crate::Gender::Female) => (m, f + 1),
+                        None => (m, f),
+                    });
+                    info!(masculinos = m, femininos = f, "gênero estimado por trecho");
+                }
+                Err(e) => warn!("sem estimativa de gênero: {e}"),
+            }
+        }
+        self.check_cancel()?;
+
         // 4. Tradução ║ Síntese (paralelo) -------------------------------------
         let total = segments.len();
         let synth_dir = job.work_dir.join("tts");
@@ -366,7 +387,8 @@ impl Pipeline {
                         // Primeira estimativa de velocidade: proporção de caracteres
                         // (barato e já evita um segundo passe de TTS na maioria dos casos).
                         let speed_hint = if pass_speed { estimate_speed(&seg.source_text, &text, &cfg_s.timing) } else { 1.0 };
-                        let audio = synthesizer.synthesize(&text, &cfg_s.target_lang, ref_path.as_deref(), speed_hint)?;
+                        let audio =
+                            synthesizer.synthesize_segment(&seg, &text, &cfg_s.target_lang, ref_path.as_deref(), speed_hint)?;
                         let p = synth_dir.join(format!("seg_{:05}.wav", seg.index));
                         audio.write_wav(&p)?;
                         seg.dubbed_wav = Some(p);
@@ -505,6 +527,51 @@ fn estimate_speed(source: &str, target: &str, cfg: &TimingConfig) -> f32 {
 }
 
 /// Reamostragem linear simples para alinhar sample rate antes da mixagem.
+/// Estima o gênero de cada segmento pelo f0 do trecho na voz isolada. Com
+/// diarização, cada falante recebe o voto majoritário (ponderado pela
+/// duração) dos seus trechos, para a voz não trocar no meio de uma fala.
+pub fn estimate_genders(segments: &mut [Segment], voice: &AudioBuffer) {
+    use std::collections::HashMap;
+    let mut per_seg: Vec<Option<f32>> = Vec::with_capacity(segments.len());
+    for s in segments.iter() {
+        per_seg.push(voice.slice_seconds(s.start, s.end).median_f0());
+    }
+    // Voto por falante: soma de durações por gênero.
+    let mut votes: HashMap<String, (f64, f64)> = HashMap::new(); // (masc, fem)
+    for (s, f0) in segments.iter().zip(&per_seg) {
+        if let (Some(spk), Some(f0)) = (&s.speaker, f0) {
+            let e = votes.entry(spk.0.clone()).or_default();
+            match crate::Gender::from_f0(*f0) {
+                crate::Gender::Male => e.0 += s.end - s.start,
+                crate::Gender::Female => e.1 += s.end - s.start,
+            }
+        }
+    }
+    // Sem diarização: voto global, usado só onde o trecho não deu f0.
+    let global = {
+        let (m, f) = segments.iter().zip(&per_seg).fold((0.0, 0.0), |(m, f), (s, f0)| match f0.map(crate::Gender::from_f0) {
+            Some(crate::Gender::Male) => (m + (s.end - s.start), f),
+            Some(crate::Gender::Female) => (m, f + (s.end - s.start)),
+            None => (m, f),
+        });
+        if m + f > 0.0 {
+            Some(if f > m { crate::Gender::Female } else { crate::Gender::Male })
+        } else {
+            None
+        }
+    };
+    for (s, f0) in segments.iter_mut().zip(&per_seg) {
+        s.gender = match (&s.speaker, f0) {
+            (Some(spk), _) if votes.get(&spk.0).map(|(m, f)| m + f > 0.0).unwrap_or(false) => {
+                let (m, f) = votes[&spk.0];
+                Some(if f > m { crate::Gender::Female } else { crate::Gender::Male })
+            }
+            (_, Some(f0)) => Some(crate::Gender::from_f0(*f0)),
+            _ => global,
+        };
+    }
+}
+
 fn resample_if_needed(a: AudioBuffer, target_sr: u32) -> AudioBuffer {
     if a.sample_rate == target_sr {
         return a;

@@ -81,9 +81,15 @@ struct VideoArgs {
     /// Implementação do TTS (só para piper): auto | native (ONNX Runtime) | python
     #[arg(long, default_value = "auto")]
     tts_impl: engines::Impl,
-    /// Voz/pacote de voz: piper → nome (pt_BR-faber-medium) ou caminho .onnx; kokoro → pf_dora, pm_alex
-    #[arg(long, default_value = "pt_BR-faber-medium")]
+    /// Voz: auto (masculina/feminina por trecho) | pt_BR-faber-medium… (Piper) | pf_dora, pm_alex, pm_santa (Kokoro) | caminho .onnx
+    #[arg(long, default_value = "auto")]
     voice: Option<String>,
+    /// Com --voice auto: voz usada nos trechos masculinos
+    #[arg(long, default_value = "pt_BR-faber-medium")]
+    voice_male: String,
+    /// Com --voice auto: voz usada nos trechos femininos
+    #[arg(long, default_value = "pf_dora")]
+    voice_female: String,
     /// Usa o ffmpeg (atempo) em vez do WSOLA nativo para ajustar a duração
     #[arg(long)]
     ffmpeg_stretch: bool,
@@ -238,6 +244,8 @@ fn video(a: VideoArgs) -> Result<()> {
             tts: a.tts,
             tts_impl: a.tts_impl,
             voice: a.voice,
+            voice_male: Some(a.voice_male),
+            voice_female: Some(a.voice_female),
             separate: !a.no_separate,
             separator_model: a.separator_model,
             diarize: !a.no_diarize,

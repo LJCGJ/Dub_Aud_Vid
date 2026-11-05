@@ -102,6 +102,31 @@ fn separator(name: &str, size_mb: u32, desc: &str, default: bool) -> ModelEntry 
     }
 }
 
+const KOKORO_RELEASE: &str = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0";
+
+fn kokoro() -> ModelEntry {
+    ModelEntry {
+        kind: ModelKind::Kokoro,
+        name: "kokoro-v1.0".into(),
+        description: "Kokoro 82M (fp16): voz feminina pf_dora e masculinas pm_alex/pm_santa em pt-BR, 24 kHz".into(),
+        files: vec![
+            FileSpec {
+                url: format!("{KOKORO_RELEASE}/kokoro-v1.0.fp16.onnx"),
+                name: "kokoro-v1.0.fp16.onnx".into(),
+                size_mb: 170,
+                archive: false,
+            },
+            FileSpec {
+                url: format!("{KOKORO_RELEASE}/voices-v1.0.bin"),
+                name: "voices-v1.0.bin".into(),
+                size_mb: 27,
+                archive: false,
+            },
+        ],
+        default: true,
+    }
+}
+
 /// Catálogo embutido. Curto de propósito: só o que faz sentido para dublagem
 /// EN → PT-BR. Modelos fora daqui continuam funcionando por caminho.
 pub fn catalog() -> Vec<ModelEntry> {
@@ -125,6 +150,8 @@ pub fn catalog() -> Vec<ModelEntry> {
         // --- separação voz/instrumental (MDX-Net do Ultimate Vocal Remover) ---
         separator("Kim_Vocal_2", 64, "Isola a voz; música e efeitos ficam intactos (recomendado)", true),
         separator("UVR-MDX-NET-Inst_HQ_3", 64, "Alternativa focada no instrumental", false),
+        // --- Kokoro: a única opção nativa de voz feminina em pt-BR ------------
+        kokoro(),
     ]
 }
 
