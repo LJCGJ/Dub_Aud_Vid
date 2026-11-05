@@ -123,9 +123,18 @@ impl WhisperTranscriber {
         params.set_no_context(true);
         let lang_str = lang_hint.map(|l| l.base().to_string());
         params.set_language(lang_str.as_deref());
-        if let Some(cb) = on_progress {
-            // O whisper.cpp reporta 0..100 por janela processada.
-            params.set_progress_callback_safe(move |p: i32| cb(p.clamp(0, 100) as u8));
+        if let Some(cb) = &on_progress {
+            // O whisper.cpp reporta 0..100 por janela processada. O whisper-rs
+            // nunca libera a closure registrada, então ela só pode segurar uma
+            // referência FRACA: se guardasse o callback (e o canal de progresso
+            // dentro dele), o receptor nunca veria o canal fechar e o job
+            // travaria no fim, já concluído.
+            let weak: std::sync::Weak<dyn Fn(u8) + Send + Sync> = Arc::downgrade(cb);
+            params.set_progress_callback_safe(move |p: i32| {
+                if let Some(cb) = weak.upgrade() {
+                    cb(p.clamp(0, 100) as u8);
+                }
+            });
         }
 
         let mut state = self.state.lock().map_err(|_| DubError::ChannelClosed("whisper state"))?;

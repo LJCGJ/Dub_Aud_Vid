@@ -200,8 +200,23 @@ pub fn run_video_job(req: &JobRequest, cancel: Arc<AtomicBool>, mut on_event: im
     let (tx, rx) = crossbeam_channel::unbounded::<Progress>();
     let run = std::thread::scope(|s| {
         let h = s.spawn(|| pipeline.run(&job, Some(tx)));
-        for p in rx.iter() {
-            on_event(JobEvent::Progress(p));
+        // Não espera o canal fechar: uma engine pode guardar um clone do sender
+        // para sempre (o whisper-rs nunca libera o callback de progresso), e aí
+        // `rx.iter()` nunca terminaria. Termina quando a thread do pipeline
+        // terminar, drenando o que sobrou.
+        loop {
+            match rx.recv_timeout(std::time::Duration::from_millis(200)) {
+                Ok(p) => on_event(JobEvent::Progress(p)),
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                    if h.is_finished() {
+                        while let Ok(p) = rx.try_recv() {
+                            on_event(JobEvent::Progress(p));
+                        }
+                        break;
+                    }
+                }
+            }
         }
         h.join().expect("pipeline thread")
     });
@@ -212,11 +227,21 @@ pub fn run_video_job(req: &JobRequest, cancel: Arc<AtomicBool>, mut on_event: im
     // 4. Saída ------------------------------------------------------------
     on_event(JobEvent::Status { message: "gerando vídeo final".into() });
     let default_out = input.default_output(&req.target_lang);
-    let out_path = match (&req.output, &req.output_dir) {
+    let mut out_path = match (&req.output, &req.output_dir) {
         (Some(o), _) => o.clone(),
         (None, Some(dir)) => dir.join(default_out.file_name().unwrap_or_default()),
         (None, None) => default_out,
     };
+    // "Teste" vira "Teste.mp4": o ffmpeg escolhe o formato pela extensão e sem
+    // ela falha no último passo, depois de todo o trabalho feito.
+    if out_path.extension().is_none() {
+        out_path.set_extension("mp4");
+    }
+    if out_path.is_relative() {
+        if let Ok(cwd) = std::env::current_dir() {
+            out_path = cwd.join(out_path);
+        }
+    }
     let opts =
         VideoOptions { keep_original_audio: req.keep_original_audio, embed_subtitles: req.embed_subtitles, ..Default::default() };
     let final_path = input.finish(&output, &out_path, &opts).context("remux")?;
