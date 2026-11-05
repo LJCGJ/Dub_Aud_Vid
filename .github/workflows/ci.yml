@@ -112,8 +112,11 @@ jobs:
           # 'vulkan-sdk' puxa Qt e leva 40 min — por isso o tarball.
           mkdir -p ~/vulkan-sdk && cd ~/vulkan-sdk
           curl -fsSL --retry 5 -o sdk.tar.xz "https://sdk.lunarg.com/sdk/download/${VULKAN_SDK_VERSION}/linux/vulkan_sdk.tar.xz"
-          tar -xJf sdk.tar.xz --wildcards "*/x86_64/bin/glslc" "*/x86_64/include/*" "*/x86_64/lib/libvulkan.so*" "*/x86_64/lib/pkgconfig/*" "*/x86_64/share/vulkan/*" 2>/dev/null || tar -xJf sdk.tar.xz
+          tar -xJf sdk.tar.xz --wildcards "*/x86_64/bin/glslc" "*/x86_64/include/*" "*/x86_64/lib/VulkanLoader/*" "*/x86_64/share/vulkan/*"
           rm sdk.tar.xz
+          # Nesta versão o loader fica em lib/VulkanLoader/lib; o FindVulkan do
+          # CMake procura em $VULKAN_SDK/lib.
+          cp -a "${VULKAN_SDK_VERSION}/x86_64/lib/VulkanLoader/lib/." "${VULKAN_SDK_VERSION}/x86_64/lib/"
 
       - name: Variáveis do Vulkan SDK (Linux)
         if: runner.os == 'Linux'
