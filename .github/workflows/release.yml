@@ -90,7 +90,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/vulkan-sdk
-          key: vulkan-sdk-linux-${{ env.VULKAN_SDK_VERSION }}
+          key: vulkan-sdk-linux-v2-${{ env.VULKAN_SDK_VERSION }}
 
       - name: Instalar Vulkan SDK (Linux)
         if: runner.os == 'Linux' && steps.vulkan-cache-linux.outputs.cache-hit != 'true'
