@@ -130,6 +130,7 @@ pub fn start_dub(app: AppHandle, state: State<'_, AppState>, args: StartArgs) ->
             voice: Some(args.voice.unwrap_or(s.voice.clone())),
             translator_model: s.translator_model.clone(),
             separate: s.separate,
+            separator_model: None,
             diarize: s.diarize,
             ..EngineChoice::default()
         },

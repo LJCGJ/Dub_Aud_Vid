@@ -97,6 +97,26 @@ impl AudioBuffer {
         Ok(())
     }
 
+    /// Reamostra por interpolação linear (suficiente para fala; para música
+    /// o pipeline trabalha na taxa nativa sempre que pode).
+    pub fn resampled(&self, target_sr: u32) -> AudioBuffer {
+        if self.sample_rate == target_sr || self.samples.is_empty() {
+            return AudioBuffer { sample_rate: target_sr, samples: self.samples.clone() };
+        }
+        let ratio = self.sample_rate as f64 / target_sr as f64;
+        let n_out = (self.samples.len() as f64 / ratio).round() as usize;
+        let mut out = Vec::with_capacity(n_out);
+        for i in 0..n_out {
+            let pos = i as f64 * ratio;
+            let i0 = pos.floor() as usize;
+            let frac = (pos - i0 as f64) as f32;
+            let x0 = self.samples.get(i0).copied().unwrap_or(0.0);
+            let x1 = self.samples.get(i0 + 1).copied().unwrap_or(x0);
+            out.push(x0 + (x1 - x0) * frac);
+        }
+        AudioBuffer::new(target_sr, out)
+    }
+
     /// *Ducking*: abaixa o volume para `gain` dentro de cada janela
     /// `(início, fim)` em segundos, com rampas de `fade` segundos nas bordas
     /// para não estalar. Fora das janelas o áudio fica intacto. Usado para

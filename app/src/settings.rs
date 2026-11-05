@@ -48,7 +48,7 @@ impl Default for Settings {
             force_cpu: false,
             performance: dub_core::Performance::Balanced,
             device_mode: dub_core::DeviceMode::Auto,
-            separate: false,
+            separate: true,
             diarize: false,
             open_when_done: true,
         }

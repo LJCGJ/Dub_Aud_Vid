@@ -170,7 +170,7 @@ pub fn find_ort_lib() -> Option<PathBuf> {
     None
 }
 
-fn ort_env() -> Result<&'static ort::environment::Environment> {
+pub(crate) fn ort_env() -> Result<&'static ort::environment::Environment> {
     let r = ORT_ENV.get_or_init(|| {
         let lib = find_ort_lib().ok_or_else(|| {
             "biblioteca onnxruntime não encontrada (defina DUB_ORT_LIB ou coloque onnxruntime.dll ao lado do executável)"
@@ -203,20 +203,8 @@ impl PiperSynthesizer {
         let env = ort_env()?;
         let device = effective_device(device);
 
-        let mut builder = Session::builder(env).map_err(ort_err)?;
-        let mut eps: Vec<ort::ep::ExecutionProviderDispatch> = Vec::new();
-        match device {
-            #[cfg(feature = "ort-cuda")]
-            Device::Cuda => eps.push(ort::ep::CUDA::default().build()),
-            #[cfg(feature = "ort-directml")]
-            Device::DirectMl => eps.push(ort::ep::DirectML::default().build()),
-            _ => {}
-        }
-        eps.push(ort::ep::CPU::default().build());
-        builder = builder.with_execution_providers(eps).map_err(|e| ort_msg(e.message()))?;
-        builder = builder.with_intra_threads(threads.max(1)).map_err(|e| ort_msg(e.message()))?;
         info!(voice = %pack.name, %device, "carregando voz Piper");
-        let session = builder.commit_from_file(&pack.onnx).map_err(ort_err)?;
+        let session = open_session(env, &pack.onnx, device, threads)?;
 
         let speaker_id = if pack.config.num_speakers > 1 { Some(0) } else { None };
         Ok(Self { pack, session: Mutex::new(session), device, speaker_id, sentence_silence: 0.2 })
@@ -254,6 +242,28 @@ impl PiperSynthesizer {
     }
 }
 
+/// Abre uma sessão ONNX Runtime no dispositivo pedido (com CPU como reserva).
+pub(crate) fn open_session(
+    env: &'static ort::environment::Environment,
+    model: &Path,
+    device: Device,
+    threads: usize,
+) -> Result<Session> {
+    let mut builder = Session::builder(env).map_err(ort_err)?;
+    let mut eps: Vec<ort::ep::ExecutionProviderDispatch> = Vec::new();
+    match device {
+        #[cfg(feature = "ort-cuda")]
+        Device::Cuda => eps.push(ort::ep::CUDA::default().build()),
+        #[cfg(feature = "ort-directml")]
+        Device::DirectMl => eps.push(ort::ep::DirectML::default().build()),
+        _ => {}
+    }
+    eps.push(ort::ep::CPU::default().build());
+    builder = builder.with_execution_providers(eps).map_err(|e| ort_msg(e.message()))?;
+    builder = builder.with_intra_threads(threads.max(1)).map_err(|e| ort_msg(e.message()))?;
+    builder.commit_from_file(model).map_err(ort_err)
+}
+
 /// Dispositivo efetivo: só GPU se o execution provider correspondente foi compilado
 /// (e a onnxruntime.dll carregada precisa ser a build com esse provider).
 pub fn effective_device(requested: Device) -> Device {
@@ -270,11 +280,11 @@ pub fn effective_device(requested: Device) -> Device {
     }
 }
 
-fn ort_err(e: ort::Error) -> DubError {
+pub(crate) fn ort_err(e: ort::Error) -> DubError {
     ort_msg(&e.to_string())
 }
 
-fn ort_msg(message: &str) -> DubError {
+pub(crate) fn ort_msg(message: &str) -> DubError {
     DubError::EngineFailed { engine: "piper".into(), stage: "synthesize", message: message.to_string() }
 }
 

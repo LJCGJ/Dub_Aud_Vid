@@ -71,6 +71,16 @@ pub trait Synthesizer: Engine {
 pub trait Separator: Engine {
     /// Devolve `(voz, fundo)` como caminhos de WAV gravados em `out_dir`.
     fn separate(&self, audio: &Path, out_dir: &Path) -> Result<(std::path::PathBuf, std::path::PathBuf)>;
+
+    /// Como `separate`, chamando `on_progress(0..=100)` conforme avança.
+    fn separate_with_progress(
+        &self,
+        audio: &Path,
+        out_dir: &Path,
+        _on_progress: Arc<dyn Fn(u8) + Send + Sync>,
+    ) -> Result<(std::path::PathBuf, std::path::PathBuf)> {
+        self.separate(audio, out_dir)
+    }
 }
 
 /// Identifica quem fala quando.

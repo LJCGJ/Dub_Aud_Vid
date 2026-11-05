@@ -44,7 +44,7 @@ fn job_finishes_even_if_engine_keeps_progress_callback() {
     let dir = tempfile::tempdir().unwrap();
     let audio = dir.path().join("in.wav");
     AudioBuffer::new(16_000, vec![0.05; 32_000]).write_wav(&audio).unwrap();
-    let job = dub_core::DubJob { audio, work_dir: dir.path().join("work") };
+    let job = dub_core::DubJob { audio, audio_hq: None, work_dir: dir.path().join("work") };
     let engines = EngineSet {
         transcriber: Arc::new(Leaky),
         translator: Arc::new(Leaky),

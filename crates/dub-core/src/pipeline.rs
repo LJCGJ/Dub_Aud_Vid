@@ -132,6 +132,9 @@ impl Default for PipelineConfig {
 pub struct DubJob {
     /// WAV mono 16 kHz do áudio original completo.
     pub audio: PathBuf,
+    /// Opcional: o mesmo áudio em alta qualidade (estéreo, 44,1 kHz), para a
+    /// separação voz/instrumental e para o fundo da mixagem.
+    pub audio_hq: Option<PathBuf>,
     /// Diretório de trabalho (arquivos intermediários).
     pub work_dir: PathBuf,
 }
@@ -199,9 +202,23 @@ impl Pipeline {
         // 1. Separação ---------------------------------------------------------
         let (voice_path, background_path) = match (&self.engines.separator, self.config.separate) {
             (Some(sep), true) => {
-                report(Stage::Separate, 0, 1, "separando voz e fundo");
-                let (v, b) = sep.separate(&job.audio, &job.work_dir)?;
-                report(Stage::Separate, 1, 1, "separação concluída");
+                report(Stage::Separate, 0, 100, "separando voz e fundo");
+                let src = job.audio_hq.as_ref().unwrap_or(&job.audio);
+                let on_progress: Arc<dyn Fn(u8) + Send + Sync> = {
+                    let progress = progress.clone();
+                    Arc::new(move |pct: u8| {
+                        if let Some(p) = &progress {
+                            let _ = p.send(Progress {
+                                stage: Stage::Separate,
+                                done: pct.min(100) as usize,
+                                total: 100,
+                                message: format!("separando voz e fundo {pct}%"),
+                            });
+                        }
+                    })
+                };
+                let (v, b) = sep.separate_with_progress(src, &job.work_dir, on_progress)?;
+                report(Stage::Separate, 100, 100, "separação concluída");
                 (v, Some(b))
             }
             _ => {
@@ -489,21 +506,10 @@ fn estimate_speed(source: &str, target: &str, cfg: &TimingConfig) -> f32 {
 
 /// Reamostragem linear simples para alinhar sample rate antes da mixagem.
 fn resample_if_needed(a: AudioBuffer, target_sr: u32) -> AudioBuffer {
-    if a.sample_rate == target_sr || a.is_empty() {
-        return AudioBuffer { sample_rate: target_sr, ..a };
+    if a.sample_rate == target_sr {
+        return a;
     }
-    let ratio = a.sample_rate as f64 / target_sr as f64;
-    let n_out = (a.samples.len() as f64 / ratio).round() as usize;
-    let mut out = Vec::with_capacity(n_out);
-    for i in 0..n_out {
-        let pos = i as f64 * ratio;
-        let i0 = pos.floor() as usize;
-        let frac = (pos - i0 as f64) as f32;
-        let x0 = a.samples.get(i0).copied().unwrap_or(0.0);
-        let x1 = a.samples.get(i0 + 1).copied().unwrap_or(x0);
-        out.push(x0 + (x1 - x0) * frac);
-    }
-    AudioBuffer::new(target_sr, out)
+    a.resampled(target_sr)
 }
 
 fn srt_time(t: f64) -> String {
@@ -570,7 +576,8 @@ mod tests {
             EngineSet { transcriber: f.clone(), translator: f.clone(), synthesizer: f.clone(), separator: None, diarizer: None };
         let cfg = PipelineConfig { sample_rate: 16000, ..Default::default() };
         let (tx, rx) = crossbeam_channel::unbounded();
-        let out = Pipeline::new(engines, cfg).run(&DubJob { audio: src, work_dir: dir.clone() }, Some(tx)).unwrap();
+        let out =
+            Pipeline::new(engines, cfg).run(&DubJob { audio: src, audio_hq: None, work_dir: dir.clone() }, Some(tx)).unwrap();
 
         assert_eq!(out.segments.len(), 2);
         assert_eq!(out.segments[0].target_text.as_deref(), Some("PT[hello world]"));

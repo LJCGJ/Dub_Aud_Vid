@@ -76,7 +76,16 @@ impl VideoInput {
     pub fn prepare(&self) -> Result<DubJob> {
         let audio = self.work_dir.join("source_16k.wav");
         self.ff.extract_audio(&self.video, &audio, 16_000)?;
-        Ok(DubJob { audio, work_dir: self.work_dir.clone() })
+        // Versão estéreo 44,1 kHz para separação voz/instrumental e mixagem.
+        let hq = self.work_dir.join("source_44k.wav");
+        let audio_hq = match self.ff.extract_audio_stereo(&self.video, &hq, 44_100) {
+            Ok(()) => Some(hq),
+            Err(e) => {
+                tracing::warn!("sem áudio em alta qualidade ({e}); separação usará o mono 16 kHz");
+                None
+            }
+        };
+        Ok(DubJob { audio, audio_hq, work_dir: self.work_dir.clone() })
     }
 
     /// Remuxa a trilha dublada no vídeo. Devolve o caminho do arquivo final.

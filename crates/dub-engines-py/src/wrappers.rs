@@ -257,7 +257,7 @@ mod tests {
             diarizer: Some(Arc::new(PyDiarizer::spawn(&env, PySpec::new("mock")).unwrap())),
         };
         let cfg = PipelineConfig { sample_rate: 22050, ..Default::default() };
-        let out = Pipeline::new(engines, cfg).run(&DubJob { audio: wav, work_dir: dir.clone() }, None).unwrap();
+        let out = Pipeline::new(engines, cfg).run(&DubJob { audio: wav, audio_hq: None, work_dir: dir.clone() }, None).unwrap();
         assert_eq!(out.segments.len(), 3);
         assert!(out.segments.iter().all(|s| s.speaker.is_some()));
         assert!(out.background_wav.is_some());

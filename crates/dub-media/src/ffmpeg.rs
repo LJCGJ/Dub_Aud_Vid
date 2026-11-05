@@ -81,6 +81,23 @@ impl Ffmpeg {
 
     /// Extrai o áudio como WAV mono PCM 16-bit no sample rate pedido
     /// (16 kHz é o que whisper/pyannote esperam).
+    /// Extrai o áudio estéreo (para separação voz/instrumental e mixagem).
+    pub fn extract_audio_stereo(&self, input: &Path, output: &Path, sample_rate: u32) -> Result<()> {
+        self.run(&[
+            "-y",
+            "-i",
+            &input.to_string_lossy(),
+            "-vn",
+            "-ac",
+            "2",
+            "-ar",
+            &sample_rate.to_string(),
+            "-c:a",
+            "pcm_s16le",
+            &output.to_string_lossy(),
+        ])
+    }
+
     pub fn extract_audio(&self, input: &Path, output: &Path, sample_rate: u32) -> Result<()> {
         self.run(&[
             "-y",

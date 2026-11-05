@@ -31,3 +31,8 @@ pub use piper::{PiperSynthesizer, VoicePack};
 pub mod translate;
 #[cfg(feature = "translate")]
 pub use translate::Ct2Translator;
+
+#[cfg(feature = "separate")]
+pub mod separate;
+#[cfg(feature = "separate")]
+pub use separate::MdxSeparator;

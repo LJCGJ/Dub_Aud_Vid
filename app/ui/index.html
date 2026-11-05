@@ -211,9 +211,9 @@
           <small>A tela do trabalho mostra onde cada etapa está rodando e o porquê. A tradução fica sempre na CPU.</small>
         </label>
         <label class="check"><input type="checkbox" id="s-cpu" /> Forçar CPU (mesmo que "Só CPU" acima)</label>
-        <label class="check"><input type="checkbox" id="s-separate" /> Separar voz do fundo (Demucs) <em class="tag">Python</em></label>
+        <label class="check"><input type="checkbox" id="s-separate" /> Separar voz do instrumental (MDX-Net) — música e efeitos ficam intactos; a dublagem entra por cima do instrumental</label>
         <label class="check"><input type="checkbox" id="s-diarize" /> Identificar falantes (pyannote) <em class="tag">Python + HF_TOKEN</em></label>
-        <small class="muted">Os recursos marcados "Python" usam engines opcionais; veja <code>py/README.md</code>. Se não estiverem instalados, o app segue sem eles.</small>
+        <small class="muted">A separação usa o modelo <code>Kim_Vocal_2</code> (aba Modelos, faz parte do conjunto padrão). Sem ele, o original fica abaixado só enquanto a dublagem fala. Os recursos marcados "Python" usam engines opcionais; veja <code>py/README.md</code>.</small>
       </div>
 
       <div class="card">

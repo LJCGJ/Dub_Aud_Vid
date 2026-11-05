@@ -8,7 +8,7 @@ description = "Engines nativas (Rust + C++): time-stretch WSOLA, whisper.cpp, Pi
 build = "build.rs"
 
 [features]
-default = ["whisper", "piper", "translate"]
+default = ["whisper", "piper", "translate", "separate"]
 # Transcrição com whisper.cpp (vendorizado pelo whisper-rs; compila com cmake).
 whisper = ["dep:whisper-rs"]
 # Aceleração do whisper.cpp — escolha UMA conforme a máquina de build.
@@ -18,6 +18,8 @@ whisper-metal = ["whisper", "whisper-rs/metal"]
 # Síntese Piper com ONNX Runtime carregado em tempo de execução (onnxruntime.dll/.so
 # fica ao lado do executável; a build DirectML ou CUDA da lib dá GPU sem recompilar).
 piper = ["dep:ort", "dep:espeak-rs-sys", "dep:unicode-normalization"]
+# Separação voz/instrumental com MDX-Net (modelos do UVR em ONNX) no mesmo ONNX Runtime.
+separate = ["piper", "dep:realfft", "dep:hound"]
 # Execution providers do ONNX Runtime (exigem a build correspondente da onnxruntime.dll).
 ort-cuda = ["piper", "ort/cuda"]
 ort-directml = ["piper", "ort/directml"]
@@ -37,6 +39,8 @@ whisper-rs = { version = "0.14", optional = true }
 ort = { version = "=2.0.0-rc.15", default-features = false, features = ["load-dynamic", "std"], optional = true }
 espeak-rs-sys = { version = "0.2", optional = true }
 unicode-normalization = { version = "0.1", optional = true }
+realfft = { workspace = true, optional = true }
+hound = { workspace = true, optional = true }
 ct2rs = { version = "0.10", default-features = false, features = ["ruy", "sentencepiece"], optional = true }
 
 [build-dependencies]

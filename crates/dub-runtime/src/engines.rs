@@ -44,6 +44,9 @@ pub struct EngineChoice {
     pub tts_impl: Impl,
     pub voice: Option<String>,
     pub separate: bool,
+    /// Modelo de separação: nome do catálogo MDX-Net, caminho .onnx ou "demucs" (Python).
+    #[serde(default)]
+    pub separator_model: Option<String>,
     pub diarize: bool,
     pub mock: bool,
 }
@@ -58,7 +61,8 @@ impl Default for EngineChoice {
             tts: "piper".into(),
             tts_impl: Impl::Auto,
             voice: Some("pt_BR-faber-medium".into()),
-            separate: false,
+            separate: true,
+            separator_model: None,
             diarize: false,
             mock: false,
         }
@@ -193,19 +197,33 @@ pub fn build(choice: &EngineChoice, backend: &Backend, work_dir: &Path) -> Resul
     };
 
     // --- Opcionais: falha neles não derruba o trabalho, só avisa -----------
-    let separator = if choice.separate {
-        match py(&mut py_env)
-            .and_then(|env| PySeparator::spawn(&env, PySpec::new("demucs").device(separate_dev)).map_err(Into::into))
-        {
-            Ok(s) => Some(Arc::new(s) as Arc<dyn dub_core::Separator>),
-            Err(e) => {
-                warn!("separação desligada: {e}");
-                None
+    let separator: Option<Arc<dyn dub_core::Separator>> = if choice.separate {
+        match native_separator(choice, separate_dev, cpu_threads) {
+            Ok(Some(s)) => {
+                native_roles.push("separator");
+                Some(s)
+            }
+            other => {
+                if let Err(e) = other {
+                    info!("separador nativo indisponível ({e}); tentando Demucs em Python");
+                }
+                match py(&mut py_env)
+                    .and_then(|env| PySeparator::spawn(&env, PySpec::new("demucs").device(separate_dev)).map_err(Into::into))
+                {
+                    Ok(s) => Some(Arc::new(s) as Arc<dyn dub_core::Separator>),
+                    Err(e) => {
+                        warn!(
+                            "separação desligada: nenhum separador disponível (rode `dub models download {DEFAULT_SEPARATOR_MODEL}`); a música ficará abaixada só sob a fala. Detalhe: {e}"
+                        );
+                        None
+                    }
+                }
             }
         }
     } else {
         None
     };
+
     let diarizer = if choice.diarize {
         match py(&mut py_env)
             .and_then(|env| PyDiarizer::spawn(&env, PySpec::new("pyannote").device(separate_dev)).map_err(Into::into))
@@ -290,6 +308,22 @@ fn native_transcriber(_: &EngineChoice, _: &Backend, _: usize) -> Result<Option<
 }
 
 pub const DEFAULT_CT2_MODEL: &str = "opus-mt-tc-big-en-pt-ct2-int8";
+pub const DEFAULT_SEPARATOR_MODEL: &str = "Kim_Vocal_2";
+
+#[cfg(feature = "native")]
+fn native_separator(choice: &EngineChoice, device: Device, threads: usize) -> Result<Option<Arc<dyn dub_core::Separator>>> {
+    let model = choice.separator_model.as_deref().unwrap_or(DEFAULT_SEPARATOR_MODEL);
+    if model.eq_ignore_ascii_case("demucs") {
+        return Ok(None);
+    }
+    let s = dub_native::MdxSeparator::load(model, device, threads)?;
+    Ok(Some(Arc::new(s)))
+}
+
+#[cfg(not(feature = "native"))]
+fn native_separator(_: &EngineChoice, _: Device, _: usize) -> Result<Option<Arc<dyn dub_core::Separator>>> {
+    Ok(None)
+}
 
 #[cfg(feature = "native")]
 fn native_translator(choice: &EngineChoice, threads: usize) -> Result<Option<Arc<dyn Translator>>> {

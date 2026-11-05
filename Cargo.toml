@@ -28,6 +28,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 crossbeam-channel = "0.5"
 hound = "3.5"
+realfft = "3.4"
 tempfile = "3"
 which = "7"
 clap = { version = "4", features = ["derive"] }

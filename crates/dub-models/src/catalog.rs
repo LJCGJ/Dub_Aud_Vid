@@ -85,6 +85,23 @@ fn translator(name: &str, size_mb: u32, desc: &str, default: bool) -> ModelEntry
     }
 }
 
+const UVR_RELEASE: &str = "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models";
+
+fn separator(name: &str, size_mb: u32, desc: &str, default: bool) -> ModelEntry {
+    ModelEntry {
+        kind: ModelKind::Separate,
+        name: name.into(),
+        description: desc.into(),
+        files: vec![FileSpec {
+            url: format!("{UVR_RELEASE}/{name}.onnx"),
+            name: format!("{name}.onnx"),
+            size_mb,
+            archive: false,
+        }],
+        default,
+    }
+}
+
 /// Catálogo embutido. Curto de propósito: só o que faz sentido para dublagem
 /// EN → PT-BR. Modelos fora daqui continuam funcionando por caminho.
 pub fn catalog() -> Vec<ModelEntry> {
@@ -105,6 +122,9 @@ pub fn catalog() -> Vec<ModelEntry> {
         // --- tradutores CTranslate2 (convertidos pelo workflow models.yml) -----
         translator("opus-mt-tc-big-en-pt-ct2-int8", 240, "Inglês → Português (Marian tc-big), int8", true),
         translator("opus-mt-en-ROMANCE-ct2-int8", 80, "Inglês → línguas românicas (menor, qualidade menor)", false),
+        // --- separação voz/instrumental (MDX-Net do Ultimate Vocal Remover) ---
+        separator("Kim_Vocal_2", 64, "Isola a voz; música e efeitos ficam intactos (recomendado)", true),
+        separator("UVR-MDX-NET-Inst_HQ_3", 64, "Alternativa focada no instrumental", false),
     ]
 }
 

@@ -87,9 +87,12 @@ struct VideoArgs {
     /// Usa o ffmpeg (atempo) em vez do WSOLA nativo para ajustar a duração
     #[arg(long)]
     ffmpeg_stretch: bool,
-    /// Desliga a separação voz/fundo (demucs)
+    /// Desliga a separação voz/instrumental (a música fica só abaixada sob a fala)
     #[arg(long)]
     no_separate: bool,
+    /// Modelo de separação: Kim_Vocal_2 (padrão), UVR-MDX-NET-Inst_HQ_3, caminho .onnx ou "demucs" (Python)
+    #[arg(long)]
+    separator_model: Option<String>,
     /// Desliga a identificação de falantes (pyannote)
     #[arg(long)]
     no_diarize: bool,
@@ -236,6 +239,7 @@ fn video(a: VideoArgs) -> Result<()> {
             tts_impl: a.tts_impl,
             voice: a.voice,
             separate: !a.no_separate,
+            separator_model: a.separator_model,
             diarize: !a.no_diarize,
             mock: a.mock,
         },

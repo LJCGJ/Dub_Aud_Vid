@@ -86,7 +86,7 @@ fica atrás dos traits `Transcriber`, `Translator`, `Synthesizer`, `Separator` e
 | Transcrição | whisper.cpp (modelo ggml) | faster-whisper |
 | Tradução | CTranslate2 (Marian int8) | Marian / NLLB (transformers) |
 | Síntese | Piper via ONNX Runtime | Piper / Kokoro / XTTS |
-| Separação voz/fundo | — (Parte 2b: demucs.cpp) | Demucs |
+| Separação voz/fundo | MDX-Net (UVR) via ONNX Runtime | Demucs |
 | Diarização | — (Parte 2b: sherpa-onnx) | pyannote |
 | Time-stretch | WSOLA em C++ | ffmpeg `atempo` (`--ffmpeg-stretch`) |
 
@@ -174,7 +174,8 @@ dub video <arquivo|url> [opções]
   --tts-impl auto          auto | native | python (só piper)
   --voice <nome|.onnx>     padrão: pt_BR-faber-medium
   --ffmpeg-stretch         atempo do ffmpeg em vez do WSOLA nativo
-  --no-separate            desliga demucs
+  --no-separate            desliga a separação voz/instrumental
+  --separator-model NOME   Kim_Vocal_2 (padrão) | UVR-MDX-NET-Inst_HQ_3 | arquivo.onnx | demucs
   --no-diarize             desliga pyannote
   --no-original-track      não manter o áudio original
   --no-subtitles           não embutir SRT
@@ -190,10 +191,16 @@ fundo separados, cada segmento sintetizado, `dub_mix.wav`, e duas legendas:
 `dub.srt` com a tradução e `dub.src.srt` com o texto reconhecido no idioma
 original — útil para ver se um erro nasceu no ouvido ou na tradução).
 
-**Sem separação de voz** (o padrão, já que o Demucs é Python e opcional), o
-áudio original inteiro entra como fundo e é abaixado só enquanto a voz
-dublada fala; música e efeitos fora da fala ficam intactos. Com separação, só
-a voz original é removida.
+**Separação voz/instrumental (padrão):** o modelo MDX-Net `Kim_Vocal_2` (do
+Ultimate Vocal Remover, em ONNX, no mesmo ONNX Runtime do Piper — CPU ou GPU)
+isola a voz original; a dublagem entra por cima do **instrumental**, então
+música, efeitos e ambiente ficam intactos — é o que permite dublar músicas e
+jogos. O whisper também ouve a voz isolada, o que melhora a transcrição com
+música alta. O modelo faz parte do conjunto padrão (`dub models download`,
+64 MB); `--separator-model` troca o modelo (`UVR-MDX-NET-Inst_HQ_3`, um
+`.onnx` próprio, ou `demucs` para a engine Python). Sem modelo instalado ou
+com `--no-separate`, o original inteiro entra como fundo e é abaixado só
+enquanto a voz dublada fala.
 
 ## App de desktop
 

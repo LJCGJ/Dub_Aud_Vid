@@ -69,6 +69,7 @@ fn kind_title(k: ModelKind) -> &'static str {
         ModelKind::Whisper => "Transcrição (whisper.cpp, ggml)",
         ModelKind::Voice => "Vozes (Piper)",
         ModelKind::Translate => "Tradução (CTranslate2)",
+        ModelKind::Separate => "Separação voz/instrumental (MDX-Net)",
     }
 }
 
