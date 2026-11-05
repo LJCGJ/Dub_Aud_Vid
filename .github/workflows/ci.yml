@@ -57,7 +57,12 @@ jobs:
       # direto do build estático no Windows.
       - name: ffmpeg (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get install -y -qq ffmpeg
+        run: |
+          # Build estático do BtbN (GitHub): o apt dos runners às vezes leva 20+ min.
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o ff.tar.xz \
+            "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-linux64-gpl.tar.xz"
+          mkdir -p ff && tar -xJf ff.tar.xz -C ff
+          echo "$(dirname "$(find ff -name ffmpeg -type f | head -1)")" >> "$GITHUB_PATH"
 
       - name: ffmpeg (macOS)
         if: runner.os == 'macOS'
