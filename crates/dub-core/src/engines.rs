@@ -27,6 +27,17 @@ pub trait Transcriber: Engine {
     /// `audio` é o WAV mono 16 kHz com a **voz isolada** (ou o original, se não houver separação).
     /// Deve devolver segmentos em ordem, com `index` sequencial a partir de 0.
     fn transcribe(&self, audio: &Path, lang_hint: Option<&Lang>) -> Result<Vec<Segment>>;
+
+    /// Como `transcribe`, chamando `on_progress(0..=100)` conforme avança.
+    /// Engines sem noção de progresso usam a implementação padrão (sem eventos).
+    fn transcribe_with_progress(
+        &self,
+        audio: &Path,
+        lang_hint: Option<&Lang>,
+        _on_progress: Arc<dyn Fn(u8) + Send + Sync>,
+    ) -> Result<Vec<Segment>> {
+        self.transcribe(audio, lang_hint)
+    }
 }
 
 /// Traduz texto entre idiomas.

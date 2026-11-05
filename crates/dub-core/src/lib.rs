@@ -19,7 +19,7 @@ pub mod segment;
 pub mod timing;
 
 pub use audio::AudioBuffer;
-pub use backend::{Backend, Device, GpuFit, Performance};
+pub use backend::{Backend, Device, DeviceMode, DevicePlan, GpuFit, GpuKind, Performance, Role};
 pub use engines::{Diarizer, EngineSet, Separator, Synthesizer, Transcriber, Translator};
 pub use error::{DubError, Result};
 pub use pipeline::{DubJob, Pipeline, PipelineConfig, Progress, Stage};

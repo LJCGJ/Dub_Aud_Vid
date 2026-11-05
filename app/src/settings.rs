@@ -22,6 +22,9 @@ pub struct Settings {
     pub force_cpu: bool,
     /// eco | balanced | max
     pub performance: dub_core::Performance,
+    /// auto | cpu | gpu | split
+    #[serde(default)]
+    pub device_mode: dub_core::DeviceMode,
     /// Recursos avançados que exigem as engines Python.
     pub separate: bool,
     pub diarize: bool,
@@ -44,6 +47,7 @@ impl Default for Settings {
             max_speed: 1.35,
             force_cpu: false,
             performance: dub_core::Performance::Balanced,
+            device_mode: dub_core::DeviceMode::Auto,
             separate: false,
             diarize: false,
             open_when_done: true,

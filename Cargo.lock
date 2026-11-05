@@ -1146,6 +1146,7 @@ dependencies = [
  "serde_json",
  "tracing",
  "tracing-subscriber",
+ "windows-sys 0.59.0",
  "winresource",
 ]
 
@@ -1161,6 +1162,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "which 7.0.3",
+ "windows",
 ]
 
 [[package]]

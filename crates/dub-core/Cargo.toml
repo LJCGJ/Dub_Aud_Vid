@@ -15,3 +15,6 @@ tracing.workspace = true
 crossbeam-channel.workspace = true
 hound.workspace = true
 which.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_System_SystemInformation", "Win32_Foundation"] }

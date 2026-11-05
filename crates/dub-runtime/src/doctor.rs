@@ -30,6 +30,16 @@ pub struct DoctorReport {
     pub cpu_threads: usize,
     pub gpu_name: Option<String>,
     pub gpu_vram_mb: Option<u64>,
+    /// GPU integrada ao processador (divide a RAM).
+    #[serde(default)]
+    pub gpu_integrated: bool,
+    #[serde(default)]
+    pub ram_total_mb: Option<u64>,
+    #[serde(default)]
+    pub ram_free_mb: Option<u64>,
+    /// Plano automático: onde cada etapa rodaria com as configurações padrão.
+    #[serde(default)]
+    pub plan: Vec<dub_core::DevicePlan>,
     /// Backends de GPU compilados neste build (o que as engines nativas conseguem usar).
     pub gpu_backends: Vec<String>,
     pub tools: Vec<ToolStatus>,
@@ -89,8 +99,12 @@ pub fn doctor() -> DoctorReport {
         device: b.preferred.to_string(),
         devices: b.available.iter().map(|d| d.to_string()).collect(),
         cpu_threads: b.cpu_threads,
-        gpu_name: b.gpu_name,
+        gpu_name: b.gpu_name.clone(),
         gpu_vram_mb: b.gpu_vram_mb,
+        gpu_integrated: b.gpu_integrated,
+        ram_total_mb: b.ram_total_mb,
+        ram_free_mb: b.ram_free_mb,
+        plan: b.plan(),
         gpu_backends: compiled_gpu_backends(),
         tools,
         native,

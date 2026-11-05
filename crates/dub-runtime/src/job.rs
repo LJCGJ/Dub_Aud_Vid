@@ -28,6 +28,9 @@ pub struct JobRequest {
     pub force_cpu: bool,
     /// Política de uso do hardware (eco | balanced | max).
     pub performance: dub_core::Performance,
+    /// Como repartir CPU/GPU (auto | cpu | gpu | split).
+    #[serde(default)]
+    pub device_mode: dub_core::DeviceMode,
     pub engines: EngineChoice,
     pub keep_original_audio: bool,
     pub embed_subtitles: bool,
@@ -47,6 +50,7 @@ impl Default for JobRequest {
             target_lang: "pt-BR".into(),
             force_cpu: false,
             performance: dub_core::Performance::default(),
+            device_mode: dub_core::DeviceMode::default(),
             engines: EngineChoice::default(),
             keep_original_audio: true,
             embed_subtitles: true,
@@ -70,6 +74,9 @@ pub struct EngineLine {
 pub struct JobResult {
     pub video: PathBuf,
     pub srt: PathBuf,
+    /// Legenda com o texto reconhecido no idioma original.
+    #[serde(default)]
+    pub srt_source: PathBuf,
     pub work_dir: PathBuf,
     pub title: String,
     pub segments: Vec<Segment>,
@@ -90,6 +97,11 @@ pub enum JobEvent {
     Device {
         device: String,
         gpu_name: Option<String>,
+        /// Modo escolhido (auto | cpu | gpu | split).
+        mode: String,
+        /// Onde cada etapa vai rodar e por quê.
+        plan: Vec<dub_core::DevicePlan>,
+        ram_free_mb: Option<u64>,
     },
     /// Vídeo aberto.
     Opened {
@@ -112,9 +124,16 @@ pub enum JobEvent {
 /// pode ser setado de outra thread para interromper no próximo ponto seguro.
 pub fn run_video_job(req: &JobRequest, cancel: Arc<AtomicBool>, mut on_event: impl FnMut(JobEvent)) -> Result<JobResult> {
     let started = Instant::now();
-    let backend = if req.force_cpu { Backend::cpu_only() } else { Backend::detect() }.with_performance(req.performance);
+    let mode = if req.force_cpu { dub_core::DeviceMode::Cpu } else { req.device_mode };
+    let backend = Backend::detect().with_performance(req.performance).with_mode(mode);
     lower_process_priority();
-    on_event(JobEvent::Device { device: backend.preferred.to_string(), gpu_name: backend.gpu_name.clone() });
+    on_event(JobEvent::Device {
+        device: backend.preferred.to_string(),
+        gpu_name: backend.gpu_name.clone(),
+        mode: backend.mode.to_string(),
+        plan: backend.plan(),
+        ram_free_mb: backend.ram_free_mb,
+    });
 
     // 1. Entrada ----------------------------------------------------------
     on_event(JobEvent::Status {
@@ -202,6 +221,7 @@ pub fn run_video_job(req: &JobRequest, cancel: Arc<AtomicBool>, mut on_event: im
     let result = JobResult {
         video: final_path,
         srt: output.srt.clone(),
+        srt_source: output.srt_source.clone(),
         work_dir,
         title: input.title.clone(),
         rushed_segments: output.segments.iter().filter(|s| s.speed_factor > 1.25).count(),

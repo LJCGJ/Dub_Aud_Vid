@@ -96,6 +96,10 @@ pub struct PipelineConfig {
     pub diarize: bool,
     /// Volume do fundo original na mixagem final (0..1).
     pub background_gain: f32,
+    /// Sem separador de voz/fundo, o áudio original inteiro vira o fundo e é
+    /// abaixado para este volume só enquanto a voz dublada toca (*ducking*);
+    /// música e efeitos fora da fala ficam intactos.
+    pub duck_gain: f32,
     /// Volume da voz dublada (0..1).
     pub voice_gain: f32,
     /// Em trechos sobrepostos, reduz a voz dublada por este fator (fica mais
@@ -115,6 +119,7 @@ impl Default for PipelineConfig {
             separate: true,
             diarize: true,
             background_gain: 0.9,
+            duck_gain: 0.2,
             voice_gain: 1.0,
             overlap_gain: 0.6,
             timing: TimingConfig::default(),
@@ -143,6 +148,8 @@ pub struct DubOutput {
     pub segments: Vec<Segment>,
     /// Legendas no idioma de destino (SRT), geradas de brinde.
     pub srt: PathBuf,
+    /// Legenda com o texto reconhecido no idioma original.
+    pub srt_source: PathBuf,
 }
 
 pub struct Pipeline {
@@ -197,18 +204,38 @@ impl Pipeline {
                 report(Stage::Separate, 1, 1, "separação concluída");
                 (v, Some(b))
             }
-            _ => (job.audio.clone(), None),
+            _ => {
+                // Sem separação: o original inteiro é o fundo (com ducking na
+                // mixagem). Perder a música/ruído seria pior do que ouvi-los
+                // baixinho sob a dublagem.
+                (job.audio.clone(), Some(job.audio.clone()))
+            }
         };
+        let ducked = self.engines.separator.is_none() || !self.config.separate;
         self.check_cancel()?;
 
         // 2. Transcrição -------------------------------------------------------
-        report(Stage::Transcribe, 0, 1, "transcrevendo");
-        let mut segments = self.engines.transcriber.transcribe(&voice_path, self.config.source_lang.as_ref())?;
+        report(Stage::Transcribe, 0, 100, "transcrevendo");
+        let on_progress: Arc<dyn Fn(u8) + Send + Sync> = {
+            let progress = progress.clone();
+            Arc::new(move |pct: u8| {
+                if let Some(p) = &progress {
+                    let _ = p.send(Progress {
+                        stage: Stage::Transcribe,
+                        done: pct.min(100) as usize,
+                        total: 100,
+                        message: format!("transcrevendo {pct}%"),
+                    });
+                }
+            })
+        };
+        let mut segments =
+            self.engines.transcriber.transcribe_with_progress(&voice_path, self.config.source_lang.as_ref(), on_progress)?;
         segments.retain(|s| !s.source_text.trim().is_empty() && s.end > s.start);
         for (i, s) in segments.iter_mut().enumerate() {
             s.index = i;
         }
-        report(Stage::Transcribe, 1, 1, &format!("{} segmentos", segments.len()));
+        report(Stage::Transcribe, 100, 100, &format!("{} segmentos", segments.len()));
         self.check_cancel()?;
 
         // 3. Diarização --------------------------------------------------------
@@ -240,7 +267,7 @@ impl Pipeline {
         report(Stage::Synthesize, total, total, "síntese concluída");
 
         // 5. Time-fit + 6. Mixagem ---------------------------------------------
-        let output = self.fit_and_mix(segments, background_path, &job.work_dir, &report)?;
+        let output = self.fit_and_mix(segments, background_path, ducked, &job.work_dir, &report)?;
         report(Stage::Done, 1, 1, "concluído");
         Ok(output)
     }
@@ -372,6 +399,7 @@ impl Pipeline {
         &self,
         mut segments: Vec<Segment>,
         background: Option<PathBuf>,
+        ducked: bool,
         work_dir: &Path,
         report: &dyn Fn(Stage, usize, usize, &str),
     ) -> Result<DubOutput> {
@@ -418,7 +446,11 @@ impl Pipeline {
         report(Stage::Mix, 0, 1, "mixando");
         let mut mixed = voice_track.clone();
         if let Some(bg) = &background {
-            let bg_audio = resample_if_needed(AudioBuffer::read_wav(bg)?, sr);
+            let mut bg_audio = resample_if_needed(AudioBuffer::read_wav(bg)?, sr);
+            if ducked {
+                let windows: Vec<(f64, f64)> = segments.iter().map(|s| (s.start, s.end)).collect();
+                bg_audio.duck(&windows, self.config.duck_gain, 0.08);
+            }
             mixed.mix_at(&bg_audio, 0.0, self.config.background_gain)?;
         }
         mixed.limit_peak(0.95);
@@ -427,9 +459,13 @@ impl Pipeline {
 
         let srt = work_dir.join("dub.srt");
         std::fs::write(&srt, to_srt(&segments))?;
+        // Também o texto reconhecido no idioma original, para conferir onde um
+        // erro nasceu (ouvido ou tradução).
+        let srt_source = work_dir.join("dub.src.srt");
+        std::fs::write(&srt_source, to_srt_source(&segments))?;
         report(Stage::Mix, 1, 1, "");
 
-        Ok(DubOutput { mixed_wav, voice_wav, background_wav: background, segments, srt })
+        Ok(DubOutput { mixed_wav, voice_wav, background_wav: background, segments, srt, srt_source })
     }
 }
 
@@ -476,10 +512,18 @@ fn srt_time(t: f64) -> String {
 }
 
 pub fn to_srt(segments: &[Segment]) -> String {
+    srt_with(segments, |s| s.target_text.as_deref().unwrap_or(&s.source_text))
+}
+
+/// SRT com o texto reconhecido no idioma original.
+pub fn to_srt_source(segments: &[Segment]) -> String {
+    srt_with(segments, |s| s.source_text.as_str())
+}
+
+fn srt_with<'a>(segments: &'a [Segment], text: impl Fn(&'a Segment) -> &'a str) -> String {
     let mut out = String::new();
     for (i, s) in segments.iter().enumerate() {
-        let text = s.target_text.as_deref().unwrap_or(&s.source_text);
-        out.push_str(&format!("{}\n{} --> {}\n{}\n\n", i + 1, srt_time(s.start), srt_time(s.end), text));
+        out.push_str(&format!("{}\n{} --> {}\n{}\n\n", i + 1, srt_time(s.start), srt_time(s.end), text(s)));
     }
     out
 }

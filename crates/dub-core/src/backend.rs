@@ -116,6 +116,88 @@ impl std::str::FromStr for Performance {
     }
 }
 
+/// Como repartir o trabalho entre CPU e GPU. É a escolha do usuário; `Auto`
+/// decide por hardware (ver `Backend::device_for`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DeviceMode {
+    /// GPU dedicada: tudo que puder na GPU. GPU integrada (Intel/AMD APU):
+    /// transcrição na CPU e voz na GPU, porque a iGPU perde da CPU no whisper.
+    #[default]
+    Auto,
+    /// Só CPU.
+    Cpu,
+    /// Tudo que tiver backend compilado vai para a GPU, mesmo integrada.
+    Gpu,
+    /// Divide: transcrição na CPU, síntese de voz na GPU (as duas trabalham em paralelo).
+    Split,
+}
+
+impl std::str::FromStr for DeviceMode {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, String> {
+        match s.to_ascii_lowercase().as_str() {
+            "auto" | "automatico" | "automático" => Ok(DeviceMode::Auto),
+            "cpu" => Ok(DeviceMode::Cpu),
+            "gpu" => Ok(DeviceMode::Gpu),
+            "split" | "dividir" | "dividido" | "misto" => Ok(DeviceMode::Split),
+            _ => Err(format!("modo de dispositivo inválido '{s}' (auto | cpu | gpu | split)")),
+        }
+    }
+}
+
+impl fmt::Display for DeviceMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            DeviceMode::Auto => "auto",
+            DeviceMode::Cpu => "cpu",
+            DeviceMode::Gpu => "gpu",
+            DeviceMode::Split => "split",
+        })
+    }
+}
+
+/// Fabricante da GPU principal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GpuKind {
+    Nvidia,
+    Amd,
+    Intel,
+    Apple,
+    #[default]
+    Unknown,
+}
+
+/// Papel de uma engine no pipeline, para decidir o dispositivo de cada uma.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    Transcribe,
+    Translate,
+    Synthesize,
+    Separate,
+}
+
+impl Role {
+    pub fn label(self) -> &'static str {
+        match self {
+            Role::Transcribe => "transcrição (whisper)",
+            Role::Translate => "tradução",
+            Role::Synthesize => "voz (TTS)",
+            Role::Separate => "separação voz/fundo",
+        }
+    }
+}
+
+/// Uma linha do plano de dispositivos: papel, dispositivo e o porquê.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DevicePlan {
+    pub role: Role,
+    pub device: Device,
+    pub reason: String,
+}
+
 /// Resultado da sondagem de hardware.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Backend {
@@ -127,10 +209,29 @@ pub struct Backend {
     pub cpu_threads: usize,
     /// Nome da GPU, se foi possível descobrir.
     pub gpu_name: Option<String>,
-    /// VRAM total da GPU em MB, se foi possível descobrir (NVIDIA via nvidia-smi).
+    /// VRAM dedicada da GPU em MB, se foi possível descobrir (nvidia-smi ou DXGI).
+    /// GPU integrada não tem VRAM própria: fica `None` e `gpu_shared_mb` diz o
+    /// quanto de RAM ela pode tomar emprestado.
     pub gpu_vram_mb: Option<u64>,
+    /// Memória de sistema compartilhável com a GPU, em MB (DXGI, Windows).
+    #[serde(default)]
+    pub gpu_shared_mb: Option<u64>,
+    /// Fabricante da GPU principal.
+    #[serde(default)]
+    pub gpu_kind: GpuKind,
+    /// GPU integrada ao processador (divide a RAM com o sistema).
+    #[serde(default)]
+    pub gpu_integrated: bool,
+    /// RAM total e disponível em MB, quando o sistema informa.
+    #[serde(default)]
+    pub ram_total_mb: Option<u64>,
+    #[serde(default)]
+    pub ram_free_mb: Option<u64>,
     /// Política de uso do hardware.
     pub performance: Performance,
+    /// Como repartir CPU/GPU.
+    #[serde(default)]
+    pub mode: DeviceMode,
 }
 
 impl Backend {
@@ -139,11 +240,29 @@ impl Backend {
         let mut available = Vec::new();
         let mut gpu_name = None;
         let mut gpu_vram_mb = None;
+        let mut gpu_shared_mb = None;
+        let mut gpu_kind = GpuKind::Unknown;
+        let mut gpu_integrated = false;
 
         if let Some((name, vram)) = probe_nvidia() {
             available.push(Device::Cuda);
             gpu_name = Some(name);
             gpu_vram_mb = vram;
+            gpu_kind = GpuKind::Nvidia;
+        }
+        // Qualquer fabricante: DXGI no Windows, sysfs no Linux.
+        if let Some(g) = probe_gpu_generic() {
+            if gpu_name.is_none() {
+                gpu_name = Some(g.name);
+                gpu_kind = g.kind;
+                gpu_vram_mb = g.dedicated_mb.filter(|&m| m > 0);
+            }
+            gpu_shared_mb = g.shared_mb;
+            gpu_integrated = g.integrated;
+        }
+        if gpu_kind == GpuKind::Unknown && cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
+            gpu_kind = GpuKind::Apple;
+            gpu_integrated = true;
         }
         if cfg!(target_os = "windows") && probe_directml() {
             available.push(Device::DirectMl);
@@ -157,8 +276,78 @@ impl Backend {
         available.push(Device::Cpu);
 
         let cpu_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        let (ram_total_mb, ram_free_mb) = probe_ram();
 
-        Backend { preferred: available[0], available, cpu_threads, gpu_name, gpu_vram_mb, performance: Performance::default() }
+        Backend {
+            preferred: available[0],
+            available,
+            cpu_threads,
+            gpu_name,
+            gpu_vram_mb,
+            gpu_shared_mb,
+            gpu_kind,
+            gpu_integrated,
+            ram_total_mb,
+            ram_free_mb,
+            performance: Performance::default(),
+            mode: DeviceMode::default(),
+        }
+    }
+
+    /// Define como repartir CPU/GPU. `Cpu` remove as GPUs da lista.
+    pub fn with_mode(mut self, mode: DeviceMode) -> Self {
+        self.mode = mode;
+        if mode == DeviceMode::Cpu {
+            self.available.retain(|d| !d.is_gpu());
+            self.preferred = Device::Cpu;
+        }
+        self
+    }
+
+    /// GPU que seria usada, se houver uma e a política permitir.
+    pub fn gpu_device(&self) -> Option<Device> {
+        self.available.iter().copied().find(|d| d.is_gpu()).filter(|_| self.performance.allows_gpu())
+    }
+
+    /// Dispositivo para cada papel segundo o modo escolhido. Tradução fica
+    /// sempre na CPU (CTranslate2 int8 é rápido ali e roda em paralelo com a
+    /// síntese na GPU).
+    pub fn device_for(&self, role: Role) -> Device {
+        self.plan_for(role).device
+    }
+
+    /// Como `device_for`, com a justificativa (para mostrar ao usuário).
+    pub fn plan_for(&self, role: Role) -> DevicePlan {
+        let gpu = self.gpu_device();
+        let (device, reason) = match (role, self.mode, gpu) {
+            (Role::Translate, _, _) => (Device::Cpu, "tradução é leve na CPU e roda em paralelo com a voz".to_string()),
+            (_, _, None) if !self.performance.allows_gpu() => (Device::Cpu, "modo Eco não usa GPU".to_string()),
+            (_, _, None) => (Device::Cpu, "nenhuma GPU utilizável".to_string()),
+            (_, DeviceMode::Cpu, _) => (Device::Cpu, "modo CPU escolhido".to_string()),
+            (_, DeviceMode::Gpu, Some(g)) => (g, "modo GPU escolhido".to_string()),
+            (Role::Transcribe, DeviceMode::Split, _) => (Device::Cpu, "modo dividido: transcrição na CPU".to_string()),
+            (_, DeviceMode::Split, Some(g)) => (g, "modo dividido: voz na GPU".to_string()),
+            (Role::Transcribe, DeviceMode::Auto, Some(_)) if self.gpu_integrated => {
+                (Device::Cpu, "GPU integrada divide a RAM e perde da CPU no whisper; a voz fica com a GPU".to_string())
+            }
+            (_, DeviceMode::Auto, Some(g)) => (g, "GPU disponível".to_string()),
+        };
+        DevicePlan { role, device, reason }
+    }
+
+    /// Plano completo, na ordem do pipeline.
+    pub fn plan(&self) -> Vec<DevicePlan> {
+        [Role::Transcribe, Role::Translate, Role::Synthesize].into_iter().map(|r| self.plan_for(r)).collect()
+    }
+
+    /// RAM que sobra depois de carregar `model_bytes` na CPU, em MB, se a RAM
+    /// for conhecida. Negativo = não cabe com folga.
+    pub fn ram_headroom_mb(&self, model_bytes: u64) -> Option<i64> {
+        let free = self.ram_free_mb? as i64;
+        // Modelos ggml ocupam ~1,3× o arquivo em memória de trabalho; deixamos
+        // ainda 1 GB para o sistema não começar a usar swap.
+        let needed = (model_bytes as f64 * 1.3 / (1024.0 * 1024.0)) as i64 + 1024;
+        Some(free - needed)
     }
 
     /// Aplica uma política de desempenho. `Eco` remove as GPUs da lista.
@@ -204,7 +393,13 @@ impl Backend {
             cpu_threads: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4),
             gpu_name: None,
             gpu_vram_mb: None,
+            gpu_shared_mb: None,
+            gpu_kind: GpuKind::Unknown,
+            gpu_integrated: false,
+            ram_total_mb: None,
+            ram_free_mb: None,
             performance: Performance::default(),
+            mode: DeviceMode::Cpu,
         }
     }
 
@@ -276,6 +471,155 @@ fn probe_vulkan() -> bool {
     }
 }
 
+/// GPU vista pelo sistema (qualquer fabricante).
+struct GenericGpu {
+    name: String,
+    kind: GpuKind,
+    dedicated_mb: Option<u64>,
+    shared_mb: Option<u64>,
+    integrated: bool,
+}
+
+fn vendor_kind(vendor_id: u32) -> GpuKind {
+    match vendor_id {
+        0x10DE => GpuKind::Nvidia,
+        0x1002 | 0x1022 => GpuKind::Amd,
+        0x8086 => GpuKind::Intel,
+        0x106B => GpuKind::Apple,
+        _ => GpuKind::Unknown,
+    }
+}
+
+/// Integrada = sem VRAM própria de verdade. Intel é integrada salvo as Arc
+/// dedicadas, que têm vários GB dedicados; APUs AMD idem.
+fn looks_integrated(kind: GpuKind, dedicated_mb: u64) -> bool {
+    match kind {
+        GpuKind::Nvidia => false,
+        GpuKind::Apple => true,
+        GpuKind::Intel | GpuKind::Amd | GpuKind::Unknown => dedicated_mb < 1536,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn probe_gpu_generic() -> Option<GenericGpu> {
+    use windows::Win32::Graphics::Dxgi::*;
+    // SAFETY: chamadas COM padrão do DXGI; os objetos são liberados no drop.
+    unsafe {
+        let factory: IDXGIFactory1 = CreateDXGIFactory1().ok()?;
+        let mut best: Option<GenericGpu> = None;
+        let mut i = 0u32;
+        while let Ok(adapter) = factory.EnumAdapters1(i) {
+            i += 1;
+            let Ok(desc) = adapter.GetDesc1() else { continue };
+            if desc.Flags & (DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32) != 0 {
+                continue; // "Microsoft Basic Render Driver"
+            }
+            let name = String::from_utf16_lossy(&desc.Description).trim_end_matches('\0').trim().to_string();
+            if name.is_empty() {
+                continue;
+            }
+            let kind = vendor_kind(desc.VendorId);
+            let dedicated_mb = (desc.DedicatedVideoMemory / (1024 * 1024)) as u64;
+            let shared_mb = (desc.SharedSystemMemory / (1024 * 1024)) as u64;
+            let g = GenericGpu {
+                name,
+                kind,
+                dedicated_mb: Some(dedicated_mb),
+                shared_mb: Some(shared_mb),
+                integrated: looks_integrated(kind, dedicated_mb),
+            };
+            // Com iGPU + dedicada na mesma máquina, a dedicada manda.
+            let better = match &best {
+                None => true,
+                Some(b) => (!g.integrated && b.integrated) || g.dedicated_mb > b.dedicated_mb,
+            };
+            if better {
+                best = Some(g);
+            }
+        }
+        best
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn probe_gpu_generic() -> Option<GenericGpu> {
+    // /sys/class/drm/card*/device/{vendor,device}: barato e sem dependências.
+    let mut best: Option<GenericGpu> = None;
+    for entry in std::fs::read_dir("/sys/class/drm").ok()?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with("card") || name.contains('-') {
+            continue;
+        }
+        let dev = entry.path().join("device");
+        let Ok(vendor) = std::fs::read_to_string(dev.join("vendor")) else { continue };
+        let vendor_id = u32::from_str_radix(vendor.trim().trim_start_matches("0x"), 16).unwrap_or(0);
+        let kind = vendor_kind(vendor_id);
+        if kind == GpuKind::Unknown {
+            continue;
+        }
+        // VRAM dedicada (amdgpu expõe mem_info_vram_total; i915/xe não).
+        let dedicated_mb = std::fs::read_to_string(dev.join("mem_info_vram_total"))
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .map(|b| b / (1024 * 1024));
+        let integrated = match kind {
+            GpuKind::Intel => dedicated_mb.map(|m| m < 1536).unwrap_or(true),
+            k => looks_integrated(k, dedicated_mb.unwrap_or(0)),
+        };
+        let g = GenericGpu { name: format!("{kind:?} ({name})"), kind, dedicated_mb, shared_mb: None, integrated };
+        let better = match &best {
+            None => true,
+            Some(b) => !g.integrated && b.integrated,
+        };
+        if better {
+            best = Some(g);
+        }
+    }
+    best
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+fn probe_gpu_generic() -> Option<GenericGpu> {
+    None
+}
+
+/// (total, disponível) em MB.
+#[cfg(target_os = "windows")]
+fn probe_ram() -> (Option<u64>, Option<u64>) {
+    use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    let mut st = MEMORYSTATUSEX { dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32, ..Default::default() };
+    // SAFETY: struct inicializada com o tamanho correto, como a API exige.
+    if unsafe { GlobalMemoryStatusEx(&mut st) }.is_ok() {
+        (Some(st.ullTotalPhys / (1024 * 1024)), Some(st.ullAvailPhys / (1024 * 1024)))
+    } else {
+        (None, None)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn probe_ram() -> (Option<u64>, Option<u64>) {
+    let Ok(info) = std::fs::read_to_string("/proc/meminfo") else { return (None, None) };
+    let get = |key: &str| {
+        info.lines()
+            .find(|l| l.starts_with(key))
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(|kb| kb / 1024)
+    };
+    (get("MemTotal:"), get("MemAvailable:"))
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+fn probe_ram() -> (Option<u64>, Option<u64>) {
+    let total = std::process::Command::new("sysctl")
+        .args(["-n", "hw.memsize"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok())
+        .map(|b| b / (1024 * 1024));
+    (total, None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,5 +658,55 @@ mod tests {
         // Eco tira a GPU
         let eco = b.with_performance(Performance::Eco);
         assert_eq!(eco.gpu_fits(10), GpuFit::NoGpu);
+    }
+
+    fn with_gpu(integrated: bool) -> Backend {
+        let mut b = Backend::cpu_only();
+        b.mode = DeviceMode::Auto;
+        b.available = vec![Device::Vulkan, Device::Cpu];
+        b.preferred = Device::Vulkan;
+        b.gpu_integrated = integrated;
+        b
+    }
+
+    #[test]
+    fn auto_splits_on_integrated_gpu() {
+        let b = with_gpu(true);
+        assert_eq!(b.device_for(Role::Transcribe), Device::Cpu);
+        assert_eq!(b.device_for(Role::Synthesize), Device::Vulkan);
+        assert_eq!(b.device_for(Role::Translate), Device::Cpu);
+    }
+
+    #[test]
+    fn auto_uses_discrete_gpu_everywhere() {
+        let b = with_gpu(false);
+        assert_eq!(b.device_for(Role::Transcribe), Device::Vulkan);
+        assert_eq!(b.device_for(Role::Synthesize), Device::Vulkan);
+    }
+
+    #[test]
+    fn explicit_modes_win() {
+        assert_eq!(with_gpu(true).with_mode(DeviceMode::Gpu).device_for(Role::Transcribe), Device::Vulkan);
+        assert_eq!(with_gpu(false).with_mode(DeviceMode::Split).device_for(Role::Transcribe), Device::Cpu);
+        assert_eq!(with_gpu(false).with_mode(DeviceMode::Split).device_for(Role::Synthesize), Device::Vulkan);
+        let cpu = with_gpu(false).with_mode(DeviceMode::Cpu);
+        assert_eq!(cpu.device_for(Role::Synthesize), Device::Cpu);
+        assert!(!cpu.is_gpu());
+        // Eco vence qualquer modo.
+        assert_eq!(
+            with_gpu(false).with_performance(Performance::Eco).with_mode(DeviceMode::Gpu).device_for(Role::Synthesize),
+            Device::Cpu
+        );
+    }
+
+    #[test]
+    fn ram_headroom() {
+        let mut b = Backend::cpu_only();
+        b.ram_free_mb = Some(4096);
+        // medium 1,5 GB → ~1,95 GB + 1 GB de folga = ~3 GB → sobra ~1 GB
+        let h = b.ram_headroom_mb(1_500 * 1024 * 1024).unwrap();
+        assert!(h > 900 && h < 1200, "{h}");
+        b.ram_free_mb = Some(1024);
+        assert!(b.ram_headroom_mb(1_500 * 1024 * 1024).unwrap() < 0);
     }
 }

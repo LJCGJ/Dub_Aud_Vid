@@ -97,6 +97,49 @@ impl AudioBuffer {
         Ok(())
     }
 
+    /// *Ducking*: abaixa o volume para `gain` dentro de cada janela
+    /// `(início, fim)` em segundos, com rampas de `fade` segundos nas bordas
+    /// para não estalar. Fora das janelas o áudio fica intacto. Usado para
+    /// manter música/ruído do original enquanto a voz dublada toca por cima.
+    pub fn duck(&mut self, windows: &[(f64, f64)], gain: f32, fade: f64) {
+        let sr = self.sample_rate as f64;
+        let n = self.samples.len();
+        if n == 0 || windows.is_empty() {
+            return;
+        }
+        // Envelope por amostra (1.0 = sem alteração), calculado como o mínimo
+        // entre as janelas, para sobreposições não "somarem" atenuação.
+        let mut env = vec![1.0f32; n];
+        let fade_n = (fade * sr).max(1.0);
+        for &(start, end) in windows {
+            if end <= start {
+                continue;
+            }
+            let s0 = ((start - fade) * sr).floor().max(0.0) as usize;
+            let s1 = ((end + fade) * sr).ceil().min(n as f64) as usize;
+            let a = start * sr;
+            let b = end * sr;
+            for (i, e) in env.iter_mut().enumerate().take(s1).skip(s0) {
+                let t = i as f64;
+                // 0 fora, 1 dentro, rampa linear nas bordas.
+                let w = if t < a {
+                    ((t - (a - fade_n)) / fade_n).clamp(0.0, 1.0)
+                } else if t > b {
+                    (((b + fade_n) - t) / fade_n).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                } as f32;
+                let g = 1.0 - w * (1.0 - gain);
+                if g < *e {
+                    *e = g;
+                }
+            }
+        }
+        for (s, e) in self.samples.iter_mut().zip(env) {
+            *s *= e;
+        }
+    }
+
     /// Normaliza o pico para `peak` (ex.: 0.95) se estiver acima.
     pub fn limit_peak(&mut self, peak: f32) {
         let max = self.samples.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
@@ -119,6 +162,17 @@ mod tests {
         assert_eq!(base.samples.len(), 13);
         assert_eq!(base.samples[8], 0.5);
         assert_eq!(base.samples[7], 0.0);
+    }
+
+    #[test]
+    fn duck_lowers_only_inside_windows() {
+        let mut a = AudioBuffer::new(100, vec![1.0; 300]); // 3 s
+        a.duck(&[(1.0, 2.0)], 0.25, 0.1);
+        assert_eq!(a.samples[20], 1.0); // antes da rampa
+        assert!((a.samples[150] - 0.25).abs() < 1e-6); // dentro
+        assert_eq!(a.samples[280], 1.0); // depois
+        let edge = a.samples[95]; // meio da rampa de entrada
+        assert!(edge > 0.25 && edge < 1.0, "rampa: {edge}");
     }
 
     #[test]

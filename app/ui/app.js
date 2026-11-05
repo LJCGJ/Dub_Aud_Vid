@@ -187,6 +187,12 @@ function resetProgress() {
   $("#job-status").textContent = "iniciando";
 }
 
+function roleLabel(r) {
+  return { transcribe: "transcrição", translate: "tradução", synthesize: "voz", separate: "separação" }[r] || r;
+}
+function deviceLabel(d) {
+  return { cuda: "GPU (CUDA)", directml: "GPU (DirectML)", vulkan: "GPU (Vulkan)", metal: "GPU (Metal)", cpu: "CPU" }[d] || d;
+}
 const STAGE_ORDER = ["separate", "transcribe", "diarize", "translate", "synthesize", "fit", "mix"];
 
 listen("job-event", (ev) => {
@@ -195,13 +201,20 @@ listen("job-event", (ev) => {
     case "status":
       $("#job-status").textContent = e.message + "…";
       break;
-    case "device":
+    case "device": {
+      const ram = e.ram_free_mb ? ` · ${(e.ram_free_mb / 1024).toFixed(1)} GB de RAM livre` : "";
+      const plan = (e.plan || [])
+        .map((p) => `<li><strong>${roleLabel(p.role)}</strong> → ${deviceLabel(p.device)} <span class="muted">${p.reason}</span></li>`)
+        .join("");
+      $("#engine-list").innerHTML =
+        `<li class="muted">${e.gpu_name || "sem GPU detectada"}${ram} · modo ${e.mode}</li>` + plan;
       break;
+    }
     case "opened":
       $("#job-title").textContent = e.title;
       break;
     case "engines":
-      $("#engine-list").innerHTML = e.engines
+      $("#engine-list").innerHTML += e.engines
         .map((x) => `<li><strong>${x.role}</strong>: ${x.name} [${x.model}] em ${x.device} <span class="${x.native ? "native" : ""}">${x.native ? "nativa" : "python"}</span></li>`)
         .join("");
       break;
@@ -336,6 +349,7 @@ function fillSettingsForm() {
   $("#s-to").value = settings.target_lang;
   $("#s-cpu").checked = settings.force_cpu;
   $("#s-perf").value = settings.performance || "balanced";
+  $("#s-device").value = settings.device_mode || "auto";
   $("#s-separate").checked = settings.separate;
   $("#s-diarize").checked = settings.diarize;
   updateOutputs();
@@ -354,6 +368,7 @@ function readSettingsForm() {
   settings.target_lang = $("#s-to").value;
   settings.force_cpu = $("#s-cpu").checked;
   settings.performance = $("#s-perf").value;
+  settings.device_mode = $("#s-device").value;
   settings.separate = $("#s-separate").checked;
   settings.diarize = $("#s-diarize").checked;
 }

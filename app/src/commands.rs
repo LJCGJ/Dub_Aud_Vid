@@ -124,6 +124,7 @@ pub fn start_dub(app: AppHandle, state: State<'_, AppState>, args: StartArgs) ->
         target_lang: s.target_lang.clone(),
         force_cpu: s.force_cpu,
         performance: s.performance,
+        device_mode: s.device_mode,
         engines: EngineChoice {
             whisper_model: args.whisper_model.unwrap_or(s.whisper_model.clone()),
             voice: Some(args.voice.unwrap_or(s.voice.clone())),

@@ -7,7 +7,7 @@
 use dub_core::engines::{Engine, EngineInfo, Transcriber};
 use dub_core::{AudioBuffer, Device, DubError, Lang, Result, Segment};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tracing::{info, warn};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState};
 
@@ -81,6 +81,31 @@ impl Engine for WhisperTranscriber {
 
 impl Transcriber for WhisperTranscriber {
     fn transcribe(&self, audio: &Path, lang_hint: Option<&Lang>) -> Result<Vec<Segment>> {
+        self.run(audio, lang_hint, None)
+    }
+
+    fn transcribe_with_progress(
+        &self,
+        audio: &Path,
+        lang_hint: Option<&Lang>,
+        on_progress: Arc<dyn Fn(u8) + Send + Sync>,
+    ) -> Result<Vec<Segment>> {
+        self.run(audio, lang_hint, Some(on_progress))
+    }
+}
+
+impl WhisperTranscriber {
+    /// Tamanho em bytes do arquivo do modelo, se ele estiver instalado.
+    pub fn model_size(model: &str) -> Option<u64> {
+        resolve_model(model).ok().and_then(|p| std::fs::metadata(p).ok()).map(|m| m.len())
+    }
+
+    fn run(
+        &self,
+        audio: &Path,
+        lang_hint: Option<&Lang>,
+        on_progress: Option<Arc<dyn Fn(u8) + Send + Sync>>,
+    ) -> Result<Vec<Segment>> {
         let buf = AudioBuffer::read_wav(audio)?;
         let samples = to_16k(&buf);
 
@@ -98,6 +123,10 @@ impl Transcriber for WhisperTranscriber {
         params.set_no_context(true);
         let lang_str = lang_hint.map(|l| l.base().to_string());
         params.set_language(lang_str.as_deref());
+        if let Some(cb) = on_progress {
+            // O whisper.cpp reporta 0..100 por janela processada.
+            params.set_progress_callback_safe(move |p: i32| cb(p.clamp(0, 100) as u8));
+        }
 
         let mut state = self.state.lock().map_err(|_| DubError::ChannelClosed("whisper state"))?;
         state.full(params, &samples).map_err(|e| DubError::EngineFailed {

@@ -34,7 +34,9 @@ já traz ffmpeg, yt-dlp, onnxruntime e os dados do espeak-ng — não precisa de
 - **CPU:** x86-64 com **AVX2** (Intel a partir de 2013 / AMD Ryzen). Os binários da release são compilados nesse nível (`native/cmake/ggml-portable.cmake`); quem compila localmente ganha otimização para a própria CPU.
 - **RAM:** 8 GB (whisper `medium` + tradutor + voz ocupam ~3 GB durante a dublagem). Com `large-v3`, 16 GB.
 - **Placa de vídeo: não é necessária.** Tudo roda na CPU. Se houver uma, o instalador do Windows a usa **automaticamente**, sem instalar CUDA: whisper via Vulkan e voz via DirectML — NVIDIA, AMD ou Intel, inclusive placas modestas como uma GT 1030. Se o modelo não couber na VRAM com 20 % de folga, aquela etapa fica na CPU e o app avisa (use `medium-q5_0` ou `small` em placas de 2 GB). Quem compila localmente com NVIDIA pode usar `native-cuda` para o máximo de desempenho.
-- **Uso do hardware:** o modo *Equilibrado* (padrão) deixa um núcleo livre e roda com prioridade abaixo do normal, para o PC continuar respondendo; *Econômico* usa metade dos núcleos e nenhuma GPU; *Máximo* usa tudo. Nenhum ajuste de clock ou voltagem é feito — a GPU é usada pelas mesmas APIs de um jogo, e o driver controla temperatura e consumo.
+- **GPU integrada (Intel Iris/UHD, AMD APU):** o whisper roda *mais devagar* nela do que na CPU (ela divide a RAM e tem pouca força de cálculo), então no modo automático a transcrição fica na CPU e só a voz vai para a GPU. Medido numa Iris Xe: whisper `medium` levou 12 min para 3 min de áudio via Vulkan, contra ~2 min na CPU.
+- **Onde processar (`--device` na CLI, "Onde processar" no app):** `auto` decide pelo hardware (GPU dedicada faz tudo; integrada só a voz); `split` divide — transcrição na CPU e voz na GPU, em paralelo; `gpu` manda tudo para a GPU; `cpu` ignora a GPU. A tela do trabalho e o `dub doctor` mostram **onde cada etapa roda e por quê**. A tradução fica sempre na CPU.
+- **Uso do hardware:** o modo *Equilibrado* (padrão) deixa um núcleo livre e roda com prioridade abaixo do normal, para o PC continuar respondendo; *Econômico* usa metade dos núcleos e nenhuma GPU; *Máximo* usa tudo. Se a RAM livre não comporta o modelo com folga, o app troca por um modelo menor já instalado (e avisa) em vez de deixar a máquina entrar em swap. Nenhum ajuste de clock ou voltagem é feito — a GPU é usada pelas mesmas APIs de um jogo, e o driver controla temperatura e consumo.
 - **Disco:** ~2 GB para o conjunto padrão de modelos.
 - **Internet:** só para baixar modelos (uma vez) e vídeos do YouTube. A dublagem em si é 100% offline.
 
@@ -177,11 +179,20 @@ dub video <arquivo|url> [opções]
   --no-subtitles           não embutir SRT
   --background-gain 0.9    volume do fundo
   --max-speed 1.35         aceleração máxima da fala
+  --device auto            auto | cpu | gpu | split (onde cada etapa roda)
+  --performance balanced   eco | balanced | max (quanto do hardware usar)
   -v / -vv                 logs
 ```
 
 Arquivos intermediários ficam em `dub_work/<título>/` (áudio extraído, voz e
-fundo separados, cada segmento sintetizado, `dub.srt`, `dub_mix.wav`).
+fundo separados, cada segmento sintetizado, `dub_mix.wav`, e duas legendas:
+`dub.srt` com a tradução e `dub.src.srt` com o texto reconhecido no idioma
+original — útil para ver se um erro nasceu no ouvido ou na tradução).
+
+**Sem separação de voz** (o padrão, já que o Demucs é Python e opcional), o
+áudio original inteiro entra como fundo e é abaixado só enquanto a voz
+dublada fala; música e efeitos fora da fala ficam intactos. Com separação, só
+a voz original é removida.
 
 ## App de desktop
 

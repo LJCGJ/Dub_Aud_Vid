@@ -200,7 +200,17 @@
           </select>
           <small>A dublagem roda com prioridade abaixo do normal: o resto do PC continua respondendo. Nenhum ajuste de clock ou voltagem é feito — o driver controla a GPU, como num jogo.</small>
         </label>
-        <label class="check"><input type="checkbox" id="s-cpu" /> Forçar CPU (ignorar GPU)</label>
+        <label class="field">
+          <span>Onde processar</span>
+          <select id="s-device">
+            <option value="auto">Automático — GPU dedicada faz tudo; GPU integrada (Intel/AMD) só a voz (padrão)</option>
+            <option value="split">Dividir — transcrição na CPU e voz na GPU, em paralelo</option>
+            <option value="gpu">Só GPU — tudo que tiver backend vai para a GPU, mesmo integrada</option>
+            <option value="cpu">Só CPU — ignora a GPU</option>
+          </select>
+          <small>A tela do trabalho mostra onde cada etapa está rodando e o porquê. A tradução fica sempre na CPU.</small>
+        </label>
+        <label class="check"><input type="checkbox" id="s-cpu" /> Forçar CPU (mesmo que "Só CPU" acima)</label>
         <label class="check"><input type="checkbox" id="s-separate" /> Separar voz do fundo (Demucs) <em class="tag">Python</em></label>
         <label class="check"><input type="checkbox" id="s-diarize" /> Identificar falantes (pyannote) <em class="tag">Python + HF_TOKEN</em></label>
         <small class="muted">Os recursos marcados "Python" usam engines opcionais; veja <code>py/README.md</code>. Se não estiverem instalados, o app segue sem eles.</small>

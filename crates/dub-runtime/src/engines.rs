@@ -3,7 +3,7 @@
 //! desligada), cai para a engine **Python**. O usuário pode forçar uma delas.
 
 use anyhow::{anyhow, Context, Result};
-use dub_core::{Backend, Device, EngineSet, Synthesizer, Transcriber, Translator};
+use dub_core::{Backend, Device, EngineSet, Role, Synthesizer, Transcriber, Translator};
 use dub_engines_py::{PyDiarizer, PySeparator, PySpec, PySynthesizer, PyTranscriber, PyTranslator, PythonEnv};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -72,7 +72,9 @@ pub struct Built {
 }
 
 pub fn build(choice: &EngineChoice, backend: &Backend, work_dir: &Path) -> Result<Built> {
-    let gpu = backend.preferred;
+    let gpu = backend.device_for(Role::Synthesize);
+    let transcribe_dev = backend.device_for(Role::Transcribe);
+    let separate_dev = backend.device_for(Role::Separate);
     let cpu_threads = backend.cpu_threads_for_side_work();
     let work_threads = backend.work_threads();
     let mut native_roles = Vec::new();
@@ -107,7 +109,7 @@ pub fn build(choice: &EngineChoice, backend: &Backend, work_dir: &Path) -> Resul
         Ok(Arc::new(
             PyTranscriber::spawn(
                 &env,
-                PySpec::new("whisper").model(&choice.whisper_model).device(gpu).threads(backend.cpu_threads),
+                PySpec::new("whisper").model(&choice.whisper_model).device(transcribe_dev).threads(backend.cpu_threads),
             )
             .context("engine de transcrição faster-whisper")?,
         ))
@@ -192,7 +194,9 @@ pub fn build(choice: &EngineChoice, backend: &Backend, work_dir: &Path) -> Resul
 
     // --- Opcionais: falha neles não derruba o trabalho, só avisa -----------
     let separator = if choice.separate {
-        match py(&mut py_env).and_then(|env| PySeparator::spawn(&env, PySpec::new("demucs").device(gpu)).map_err(Into::into)) {
+        match py(&mut py_env)
+            .and_then(|env| PySeparator::spawn(&env, PySpec::new("demucs").device(separate_dev)).map_err(Into::into))
+        {
             Ok(s) => Some(Arc::new(s) as Arc<dyn dub_core::Separator>),
             Err(e) => {
                 warn!("separação desligada: {e}");
@@ -203,7 +207,9 @@ pub fn build(choice: &EngineChoice, backend: &Backend, work_dir: &Path) -> Resul
         None
     };
     let diarizer = if choice.diarize {
-        match py(&mut py_env).and_then(|env| PyDiarizer::spawn(&env, PySpec::new("pyannote").device(gpu)).map_err(Into::into)) {
+        match py(&mut py_env)
+            .and_then(|env| PyDiarizer::spawn(&env, PySpec::new("pyannote").device(separate_dev)).map_err(Into::into))
+        {
             Ok(d) => Some(Arc::new(d) as Arc<dyn dub_core::Diarizer>),
             Err(e) => {
                 warn!("diarização desligada: {e}");
@@ -234,8 +240,48 @@ fn python_tts(env: &PythonEnv, choice: &EngineChoice, gpu: Device, work_dir: &Pa
 
 #[cfg(feature = "native")]
 fn native_transcriber(choice: &EngineChoice, backend: &Backend, threads: usize) -> Result<Option<Arc<dyn Transcriber>>> {
-    let t = dub_native::WhisperTranscriber::load_with_backend(&choice.whisper_model, backend.preferred, threads, Some(backend))?;
+    let device = backend.device_for(Role::Transcribe);
+    let (model, threads) = fit_whisper_to_ram(&choice.whisper_model, device, backend, threads);
+    let t = dub_native::WhisperTranscriber::load_with_backend(&model, device, threads, Some(backend))?;
     Ok(Some(Arc::new(t)))
+}
+
+/// Mantém a máquina confortável: se o modelo pedido não cabe na RAM livre com
+/// folga, usa o maior modelo menor que já esteja instalado e avisa; se nenhum
+/// couber, segue com o pedido mas avisa que pode ficar lento (swap).
+#[cfg(feature = "native")]
+fn fit_whisper_to_ram(requested: &str, device: Device, backend: &Backend, threads: usize) -> (String, usize) {
+    use dub_native::WhisperTranscriber as W;
+    let size_of = |m: &str| W::model_size(m).unwrap_or(0);
+    let Some(headroom) = backend.ram_headroom_mb(size_of(requested)) else { return (requested.to_string(), threads) };
+    if headroom >= 0 {
+        return (requested.to_string(), threads);
+    }
+    // Em GPU dedicada o modelo mora na VRAM; a RAM só é problema em CPU/iGPU.
+    if device.is_gpu() && !backend.gpu_integrated {
+        return (requested.to_string(), threads);
+    }
+    const LADDER: [&str; 6] = ["large-v3-turbo", "medium", "small", "base", "tiny", "tiny"];
+    let start = LADDER.iter().position(|m| requested.starts_with(m)).unwrap_or(0);
+    for m in &LADDER[start + 1..] {
+        if W::model_available(m) && backend.ram_headroom_mb(size_of(m)).unwrap_or(0) >= 0 {
+            warn!(
+                requested,
+                using = m,
+                ram_free_mb = backend.ram_free_mb.unwrap_or(0),
+                "pouca RAM livre para o modelo pedido; usando um menor para a máquina não travar (feche programas ou passe --whisper-model para forçar)"
+            );
+            return (m.to_string(), threads);
+        }
+    }
+    warn!(
+        requested,
+        ram_free_mb = backend.ram_free_mb.unwrap_or(0),
+        faltam_mb = -headroom,
+        "pouca RAM livre para este modelo e nenhum menor instalado: pode ficar lento (swap). Feche programas ou rode `dub models download small`"
+    );
+    // Menos threads = menos memória de trabalho e menos pressão.
+    (requested.to_string(), (threads / 2).max(1))
 }
 
 #[cfg(not(feature = "native"))]

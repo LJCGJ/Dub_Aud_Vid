@@ -48,9 +48,12 @@ struct VideoArgs {
     /// Diretório de trabalho (padrão: ./dub_work/<título>)
     #[arg(long)]
     work_dir: Option<PathBuf>,
-    /// Força CPU mesmo com GPU disponível
+    /// Força CPU mesmo com GPU disponível (atalho para --device cpu)
     #[arg(long)]
     cpu: bool,
+    /// Onde rodar: auto (decide pelo hardware) | cpu | gpu | split (whisper na CPU, voz na GPU)
+    #[arg(long, default_value = "auto")]
+    device: dub_core::DeviceMode,
     /// Uso do hardware: eco (metade dos núcleos, sem GPU) | balanced (deixa folga; padrão) | max
     #[arg(long, default_value = "balanced")]
     performance: dub_core::Performance,
@@ -103,6 +106,11 @@ struct VideoArgs {
 }
 
 fn main() -> Result<()> {
+    // Console do Windows em UTF-8, senão acentos saem como "Ã£".
+    #[cfg(windows)]
+    unsafe {
+        windows_sys::Win32::System::Console::SetConsoleOutputCP(65001);
+    }
     let cli = Cli::parse();
     let level = match cli.verbose {
         0 => "warn",
@@ -129,12 +137,23 @@ fn doctor() -> Result<()> {
     println!("  disponíveis:           {}", r.devices.join(", "));
     println!("  threads de CPU:        {}", r.cpu_threads);
     if let Some(g) = &r.gpu_name {
-        println!("  GPU:                   {g}{}", r.gpu_vram_mb.map(|v| format!(" ({v} MB VRAM)")).unwrap_or_default());
+        println!(
+            "  GPU:                   {g}{}{}",
+            r.gpu_vram_mb.map(|v| format!(" ({v} MB VRAM)")).unwrap_or_default(),
+            if r.gpu_integrated { " — integrada, divide a RAM com o sistema" } else { "" }
+        );
     }
     println!(
         "  backends de GPU:       {}",
         if r.gpu_backends.is_empty() { "nenhum neste build (tudo em CPU)".to_string() } else { r.gpu_backends.join(", ") }
     );
+    if let (Some(t), Some(f)) = (r.ram_total_mb, r.ram_free_mb) {
+        println!("  RAM:                   {:.1} GB livres de {:.1} GB", f as f64 / 1024.0, t as f64 / 1024.0);
+    }
+    println!("  plano automático:");
+    for p in &r.plan {
+        println!("    {:<22} → {:<9} {}", p.role.label(), p.device.to_string(), p.reason);
+    }
     let print = |t: &dub_runtime::ToolStatus| println!("  {:<26} {} {}", t.name, if t.ok { "ok   " } else { "FALTA" }, t.detail);
     println!("\nFerramentas");
     r.tools.iter().for_each(print);
@@ -170,6 +189,7 @@ fn video(a: VideoArgs) -> Result<()> {
         target_lang: a.to,
         force_cpu: a.cpu,
         performance: a.performance,
+        device_mode: a.device,
         engines: engines::EngineChoice {
             transcriber_impl: a.transcriber,
             whisper_model: a.whisper_model,
@@ -193,8 +213,15 @@ fn video(a: VideoArgs) -> Result<()> {
     let ui = std::thread::spawn(move || progress_ui(rx));
     let cancel = Arc::new(AtomicBool::new(false));
     let result = dub_runtime::run_video_job(&req, cancel, |ev| match ev {
-        JobEvent::Device { device, gpu_name } => {
-            eprintln!("▶ dispositivo: {device}{}", gpu_name.map(|g| format!(" ({g})")).unwrap_or_default())
+        JobEvent::Device { gpu_name, mode, plan, ram_free_mb, .. } => {
+            eprintln!(
+                "▶ hardware: {}{}  |  modo: {mode}",
+                gpu_name.as_deref().unwrap_or("sem GPU detectada"),
+                ram_free_mb.map(|m| format!(", {:.1} GB de RAM livre", m as f64 / 1024.0)).unwrap_or_default()
+            );
+            for p in plan {
+                eprintln!("  {:<22} → {:<9} {}", p.role.label(), p.device.to_string(), p.reason);
+            }
         }
         JobEvent::Status { message } => eprintln!("▶ {message}…"),
         JobEvent::Opened { title, .. } => eprintln!("▶ vídeo: {title}"),
@@ -220,7 +247,7 @@ fn video(a: VideoArgs) -> Result<()> {
 
     eprintln!("\n✔ pronto em {}m{:02}s", r.elapsed_secs / 60, r.elapsed_secs % 60);
     eprintln!("  vídeo:    {}", r.video.display());
-    eprintln!("  legenda:  {}", r.srt.display());
+    eprintln!("  legenda:  {} (tradução) e {} (original reconhecido)", r.srt.display(), r.srt_source.display());
     eprintln!("  segmentos: {}", r.segments.len());
     if r.rushed_segments > 0 {
         eprintln!("  ⚠ {} segmentos acelerados acima de 1.25x (tradução longa)", r.rushed_segments);
