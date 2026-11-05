@@ -126,6 +126,9 @@ jobs:
           echo "$SDK/bin" >> "$GITHUB_PATH"
           echo "LD_LIBRARY_PATH=$SDK/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
           ls "$SDK/bin/glslc" "$SDK/include/vulkan/vulkan.h" "$SDK/lib/libvulkan.so"
+          # O linker procura -lvulkan nos caminhos padrão; o whisper-rs-sys não
+          # adiciona $VULKAN_SDK/lib no Linux.
+          sudo cp -a "$SDK"/lib/libvulkan.so* /usr/local/lib/ && sudo ldconfig
           "$SDK/bin/glslc" --version | head -1
 
       - name: Vulkan SDK (Windows)
