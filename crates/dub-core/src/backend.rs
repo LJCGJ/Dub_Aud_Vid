@@ -503,6 +503,7 @@ fn probe_vulkan() -> bool {
 }
 
 /// GPU vista pelo sistema (qualquer fabricante).
+#[allow(dead_code)] // nem toda plataforma tem sonda
 struct GenericGpu {
     name: String,
     kind: GpuKind,
@@ -511,6 +512,7 @@ struct GenericGpu {
     integrated: bool,
 }
 
+#[allow(dead_code)]
 fn vendor_kind(vendor_id: u32) -> GpuKind {
     match vendor_id {
         0x10DE => GpuKind::Nvidia,
@@ -523,6 +525,7 @@ fn vendor_kind(vendor_id: u32) -> GpuKind {
 
 /// Integrada = sem VRAM própria de verdade. Intel é integrada salvo as Arc
 /// dedicadas, que têm vários GB dedicados; APUs AMD idem.
+#[allow(dead_code)]
 fn looks_integrated(kind: GpuKind, dedicated_mb: u64) -> bool {
     match kind {
         GpuKind::Nvidia => false,

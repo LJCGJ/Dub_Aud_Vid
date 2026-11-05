@@ -67,7 +67,11 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          curl -sSL -o ff.zip "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip"
+          # BtbN às vezes responde HTML/429 em vez do zip: tenta de novo e, se
+          # ainda falhar, usa o build do gyan.dev.
+          fetch() { curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o ff.zip "$1" && unzip -tq ff.zip >/dev/null; }
+          fetch "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip" \
+            || fetch "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
           unzip -q ff.zip -d ff
           echo "$(cygpath -w "$(dirname "$(find ff -name ffmpeg.exe | head -1)")")" >> "$GITHUB_PATH"
 
