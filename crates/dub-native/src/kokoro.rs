@@ -9,16 +9,14 @@
 
 use crate::kokoro_vocab::KOKORO_VOCAB;
 use crate::phonemize::phonemize;
-use crate::piper::{effective_device, open_session, ort_env, ort_err};
+use crate::piper::{ort_err, OrtEngine};
 use dub_core::engines::{Engine, EngineInfo, Synthesizer};
 use dub_core::paths::{self, ModelKind};
 use dub_core::{AudioBuffer, Device, DubError, Lang, Result};
-use ort::session::Session;
 use ort::value::Tensor;
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use tracing::{info, warn};
 
 pub const SAMPLE_RATE: u32 = 24_000;
@@ -28,11 +26,10 @@ const MODEL_FILE: &str = "kokoro-v1.0.fp16.onnx";
 const VOICES_FILE: &str = "voices-v1.0.bin";
 
 pub struct KokoroSynthesizer {
-    session: Mutex<Session>,
+    engine: OrtEngine,
     /// Estilo da voz escolhida: 510 vetores de 256 (um por comprimento de frase).
     style: Vec<f32>,
     voice: String,
-    device: Device,
     vocab: HashMap<char, i64>,
     pub sentence_silence: f32,
 }
@@ -59,13 +56,12 @@ pub fn is_kokoro_voice(name: &str) -> bool {
 impl KokoroSynthesizer {
     pub fn load(voice: &str, device: Device, threads: usize) -> Result<Self> {
         let dir = model_dir()?;
-        let env = ort_env()?;
         let device = effective_device(device);
         info!(%voice, %device, "carregando Kokoro");
-        let session = open_session(env, &dir.join(MODEL_FILE), device, threads)?;
+        let engine = OrtEngine::open("kokoro", &dir.join(MODEL_FILE), device, threads)?;
         let style = load_voice(&dir.join(VOICES_FILE), voice)?;
         let vocab = KOKORO_VOCAB.iter().copied().collect();
-        Ok(Self { session: Mutex::new(session), style, voice: voice.to_string(), device, vocab, sentence_silence: 0.2 })
+        Ok(Self { engine, style, voice: voice.to_string(), vocab, sentence_silence: 0.2 })
     }
 
     pub fn model_available() -> bool {
@@ -86,14 +82,29 @@ impl KokoroSynthesizer {
         tokens.push(0);
         tokens.extend_from_slice(&ids[..n]);
         tokens.push(0);
-        let style_row = &self.style[n * STYLE_DIM..(n + 1) * STYLE_DIM];
-        let tokens_t = Tensor::from_array(([1usize, tokens.len()], tokens)).map_err(ort_err)?;
-        let style_t = Tensor::from_array(([1usize, STYLE_DIM], style_row.to_vec())).map_err(ort_err)?;
-        let speed_t = Tensor::from_array(([1usize], vec![speed])).map_err(ort_err)?;
-        let mut session = self.session.lock().map_err(|_| DubError::ChannelClosed("kokoro session"))?;
-        let outputs = session.run(ort::inputs!["tokens" => tokens_t, "style" => style_t, "speed" => speed_t]).map_err(ort_err)?;
-        let (_shape, data) = outputs[0].try_extract_tensor::<f32>().map_err(ort_err)?;
-        Ok(data.iter().map(|v| v.clamp(-1.0, 1.0)).collect())
+        let style_row = self.style[n * STYLE_DIM..(n + 1) * STYLE_DIM].to_vec();
+        self.engine.run(|session| {
+            let tokens_t = Tensor::from_array(([1usize, tokens.len()], tokens.clone())).map_err(ort_err)?;
+            let style_t = Tensor::from_array(([1usize, STYLE_DIM], style_row.clone())).map_err(ort_err)?;
+            let speed_t = Tensor::from_array(([1usize], vec![speed])).map_err(ort_err)?;
+            let outputs =
+                session.run(ort::inputs!["tokens" => tokens_t, "style" => style_t, "speed" => speed_t]).map_err(ort_err)?;
+            let (_shape, data) = outputs[0].try_extract_tensor::<f32>().map_err(ort_err)?;
+            Ok(data.iter().map(|v| v.clamp(-1.0, 1.0)).collect())
+        })
+    }
+}
+
+/// O grafo fp16 do Kokoro tem um ConvTranspose (`/encoder/F0.1/pool`) que o
+/// DirectML rejeita em tempo de execução; CUDA funciona. Começar na CPU evita
+/// a falha e o custo de recarregar.
+fn effective_device(requested: Device) -> Device {
+    match crate::piper::effective_device(requested) {
+        Device::DirectMl => {
+            info!("Kokoro: DirectML não executa este grafo; usando CPU");
+            Device::Cpu
+        }
+        d => d,
     }
 }
 
@@ -156,7 +167,7 @@ fn parse_npy_f32(bytes: &[u8], expected: usize) -> Result<Vec<f32>> {
 
 impl Engine for KokoroSynthesizer {
     fn info(&self) -> EngineInfo {
-        EngineInfo { name: "kokoro".into(), model: self.voice.clone(), device: self.device.to_string() }
+        EngineInfo { name: "kokoro".into(), model: self.voice.clone(), device: self.engine.device().to_string() }
     }
 }
 

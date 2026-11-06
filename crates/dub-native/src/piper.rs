@@ -190,8 +190,7 @@ pub fn ort_available() -> bool {
 
 pub struct PiperSynthesizer {
     pack: VoicePack,
-    session: Mutex<Session>,
-    device: Device,
+    engine: OrtEngine,
     speaker_id: Option<i64>,
     /// Silêncio entre sentenças, em segundos (Piper usa 0,2).
     pub sentence_silence: f32,
@@ -200,14 +199,13 @@ pub struct PiperSynthesizer {
 impl PiperSynthesizer {
     pub fn load(voice: &str, device: Device, threads: usize) -> Result<Self> {
         let pack = VoicePack::resolve(voice)?;
-        let env = ort_env()?;
         let device = effective_device(device);
 
         info!(voice = %pack.name, %device, "carregando voz Piper");
-        let session = open_session(env, &pack.onnx, device, threads)?;
+        let engine = OrtEngine::open("piper", &pack.onnx, device, threads)?;
 
         let speaker_id = if pack.config.num_speakers > 1 { Some(0) } else { None };
-        Ok(Self { pack, session: Mutex::new(session), device, speaker_id, sentence_silence: 0.2 })
+        Ok(Self { pack, engine, speaker_id, sentence_silence: 0.2 })
     }
 
     pub fn with_speaker(mut self, id: i64) -> Self {
@@ -224,21 +222,73 @@ impl PiperSynthesizer {
     fn run_sentence(&self, ids: Vec<i64>, length_scale: f32) -> Result<Vec<f32>> {
         let n = ids.len();
         let inf = &self.pack.config.inference;
-        let input = Tensor::from_array(([1usize, n], ids)).map_err(ort_err)?;
-        let lengths = Tensor::from_array(([1usize], vec![n as i64])).map_err(ort_err)?;
-        let scales = Tensor::from_array(([3usize], vec![inf.noise_scale, length_scale, inf.noise_w])).map_err(ort_err)?;
+        let speaker_id = self.speaker_id;
+        self.engine.run(|session| {
+            let input = Tensor::from_array(([1usize, n], ids.clone())).map_err(ort_err)?;
+            let lengths = Tensor::from_array(([1usize], vec![n as i64])).map_err(ort_err)?;
+            let scales = Tensor::from_array(([3usize], vec![inf.noise_scale, length_scale, inf.noise_w])).map_err(ort_err)?;
+            let outputs = if let Some(sid) = speaker_id {
+                let sid_t = Tensor::from_array(([1usize], vec![sid])).map_err(ort_err)?;
+                session
+                    .run(ort::inputs!["input" => input, "input_lengths" => lengths, "scales" => scales, "sid" => sid_t])
+                    .map_err(ort_err)?
+            } else {
+                session.run(ort::inputs!["input" => input, "input_lengths" => lengths, "scales" => scales]).map_err(ort_err)?
+            };
+            let (_shape, data) = outputs[0].try_extract_tensor::<f32>().map_err(ort_err)?;
+            Ok(data.iter().map(|v| v.clamp(-1.0, 1.0)).collect())
+        })
+    }
+}
 
-        let mut session = self.session.lock().map_err(|_| DubError::ChannelClosed("piper session"))?;
-        let outputs = if let Some(sid) = self.speaker_id {
-            let sid_t = Tensor::from_array(([1usize], vec![sid])).map_err(ort_err)?;
-            session
-                .run(ort::inputs!["input" => input, "input_lengths" => lengths, "scales" => scales, "sid" => sid_t])
-                .map_err(ort_err)?
-        } else {
-            session.run(ort::inputs!["input" => input, "input_lengths" => lengths, "scales" => scales]).map_err(ort_err)?
+/// Sessão ONNX Runtime com reserva automática: se uma execução falhar na GPU
+/// (um operador que o DirectML/CUDA não suporta naquele grafo, por exemplo),
+/// reabre o modelo na CPU uma vez e repete — em vez de derrubar o trabalho.
+pub(crate) struct OrtEngine {
+    session: Mutex<Session>,
+    model: PathBuf,
+    threads: usize,
+    device: Mutex<Device>,
+    label: &'static str,
+}
+
+impl OrtEngine {
+    pub(crate) fn open(label: &'static str, model: &Path, device: Device, threads: usize) -> Result<Self> {
+        let env = ort_env()?;
+        let session = open_session(env, model, device, threads)?;
+        Ok(Self { session: Mutex::new(session), model: model.to_path_buf(), threads, device: Mutex::new(device), label })
+    }
+
+    pub(crate) fn device(&self) -> Device {
+        *self.device.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Executa `f` com a sessão; na primeira falha em GPU, cai para CPU e tenta de novo.
+    pub(crate) fn run<T>(&self, f: impl Fn(&mut Session) -> Result<T>) -> Result<T> {
+        let first = {
+            let mut s = self.session.lock().map_err(|_| DubError::ChannelClosed("sessão onnx"))?;
+            f(&mut s)
         };
-        let (_shape, data) = outputs[0].try_extract_tensor::<f32>().map_err(ort_err)?;
-        Ok(data.iter().map(|v| v.clamp(-1.0, 1.0)).collect())
+        match first {
+            Ok(v) => Ok(v),
+            Err(e) if self.device().is_gpu() => {
+                warn!(
+                    engine = self.label,
+                    device = %self.device(),
+                    "falha na GPU ({e}); reabrindo o modelo na CPU e repetindo"
+                );
+                let env = ort_env()?;
+                let cpu = open_session(env, &self.model, Device::Cpu, self.threads)?;
+                {
+                    let mut s = self.session.lock().map_err(|_| DubError::ChannelClosed("sessão onnx"))?;
+                    *s = cpu;
+                }
+                *self.device.lock().unwrap_or_else(|e| e.into_inner()) = Device::Cpu;
+                let mut s = self.session.lock().map_err(|_| DubError::ChannelClosed("sessão onnx"))?;
+                f(&mut s)
+            }
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -290,7 +340,7 @@ pub(crate) fn ort_msg(message: &str) -> DubError {
 
 impl Engine for PiperSynthesizer {
     fn info(&self) -> EngineInfo {
-        EngineInfo { name: "piper".into(), model: self.pack.name.clone(), device: self.device.to_string() }
+        EngineInfo { name: "piper".into(), model: self.pack.name.clone(), device: self.engine.device().to_string() }
     }
 }
 

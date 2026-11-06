@@ -12,16 +12,15 @@
 //! Validado contra uma implementação de referência em NumPy: voz isolada com
 //! correlação 0,99 com a fala original e instrumental 0,998 com a música.
 
-use crate::piper::{effective_device, open_session, ort_env, ort_err};
+use crate::piper::{effective_device, ort_err, OrtEngine};
 use dub_core::engines::{Engine, EngineInfo, Separator};
 use dub_core::paths::{self, ModelKind};
 use dub_core::{AudioBuffer, Device, DubError, Result};
-use ort::session::Session;
 use ort::value::Tensor;
 use realfft::num_complex::Complex;
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tracing::{debug, info};
 
 /// Hiperparâmetros de um modelo MDX-Net (do `model_data.json` do UVR).
@@ -65,10 +64,9 @@ impl MdxParams {
 }
 
 pub struct MdxSeparator {
-    session: Mutex<Session>,
+    engine: OrtEngine,
     params: MdxParams,
     name: String,
-    device: Device,
 }
 
 const MODEL_SR: u32 = 44_100;
@@ -77,13 +75,12 @@ impl MdxSeparator {
     /// `model` é um nome do catálogo (`Kim_Vocal_2`) ou um caminho `.onnx`.
     pub fn load(model: &str, device: Device, threads: usize) -> Result<Self> {
         let path = resolve_model(model)?;
-        let env = ort_env()?;
         let device = effective_device(device);
         info!(model = %path.display(), %device, "carregando separador MDX-Net");
-        let session = open_session(env, &path, device, threads)?;
+        let engine = OrtEngine::open("mdx-net", &path, device, threads)?;
         let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| model.to_string());
         let params = MdxParams::for_model(&name);
-        Ok(Self { session: Mutex::new(session), params, name, device })
+        Ok(Self { engine, params, name })
     }
 
     pub fn model_available(model: &str) -> bool {
@@ -109,16 +106,18 @@ impl MdxSeparator {
 
         let fft = Stft::new(p.n_fft, p.hop);
         let total_chunks = (len + trim).div_ceil(gen);
-        let mut session = self.session.lock().map_err(|_| DubError::ChannelClosed("mdx session"))?;
         let mut i = 0usize;
         let mut done = 0usize;
         while i < len + trim {
             let seg: [&[f32]; 2] = [&padded[0][i..(i + chunk).min(padded_len)], &padded[1][i..(i + chunk).min(padded_len)]];
             let spec = fft.stft_pair(seg, chunk, p.dim_f);
-            let input = Tensor::from_array(([1usize, 4, p.dim_f, p.dim_t], spec)).map_err(ort_err)?;
-            let outputs = session.run(ort::inputs!["input" => input]).map_err(ort_err)?;
-            let (_shape, data) = outputs[0].try_extract_tensor::<f32>().map_err(ort_err)?;
-            let y = fft.istft_pair(data, chunk, p.dim_f, p.dim_t);
+            let out_spec: Vec<f32> = self.engine.run(|session| {
+                let input = Tensor::from_array(([1usize, 4, p.dim_f, p.dim_t], spec.clone())).map_err(ort_err)?;
+                let outputs = session.run(ort::inputs!["input" => input]).map_err(ort_err)?;
+                let (_shape, data) = outputs[0].try_extract_tensor::<f32>().map_err(ort_err)?;
+                Ok(data.to_vec())
+            })?;
+            let y = fft.istft_pair(&out_spec, chunk, p.dim_f, p.dim_t);
             for c in 0..2 {
                 let dst = &mut out[c][i + trim..i + chunk - trim];
                 let src = &y[c][trim..chunk - trim];
@@ -131,7 +130,6 @@ impl MdxSeparator {
             on_progress(done.min(total_chunks), total_chunks);
             debug!(chunk = done, total = total_chunks, "mdx");
         }
-        drop(session);
 
         let primary: [Vec<f32>; 2] = [
             out[0][trim..trim + len].iter().map(|v| v * p.compensate).collect(),
@@ -273,7 +271,7 @@ fn reflect(j: isize, len: isize) -> usize {
 
 impl Engine for MdxSeparator {
     fn info(&self) -> EngineInfo {
-        EngineInfo { name: "mdx-net".into(), model: self.name.clone(), device: self.device.to_string() }
+        EngineInfo { name: "mdx-net".into(), model: self.name.clone(), device: self.engine.device().to_string() }
     }
 }
 
