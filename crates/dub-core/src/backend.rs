@@ -359,6 +359,11 @@ impl Backend {
             (_, _, None) if !self.performance.allows_gpu() => (Device::Cpu, "modo Eco não usa GPU".to_string()),
             (_, _, None) => (Device::Cpu, "nenhuma GPU utilizável".to_string()),
             (_, DeviceMode::Cpu, _) => (Device::Cpu, "modo CPU escolhido".to_string()),
+            // Separação (MDX-Net) é pesada em memória; em iGPU ela estoura a RAM
+            // compartilhada e o DirectML derruba o processo. CPU, em qualquer modo.
+            (Role::Separate, _, Some(_)) if weak_igpu => {
+                (Device::Cpu, "separação pesada em memória; GPU integrada dividiria a RAM e pode estourar".to_string())
+            }
             (_, _, Some(_)) if !compiled => (Device::Cpu, "este build não tem backend de GPU para esta etapa".to_string()),
             (_, DeviceMode::Gpu, Some(g)) => (g, "modo GPU escolhido".to_string()),
             (Role::Transcribe, DeviceMode::Split, _) => (Device::Cpu, "modo dividido: transcrição na CPU".to_string()),
@@ -373,7 +378,7 @@ impl Backend {
 
     /// Plano completo, na ordem do pipeline.
     pub fn plan(&self) -> Vec<DevicePlan> {
-        [Role::Transcribe, Role::Translate, Role::Synthesize].into_iter().map(|r| self.plan_for(r)).collect()
+        [Role::Separate, Role::Transcribe, Role::Translate, Role::Synthesize].into_iter().map(|r| self.plan_for(r)).collect()
     }
 
     /// RAM que sobra depois de carregar `model_bytes` na CPU, em MB, se a RAM
@@ -408,7 +413,18 @@ impl Backend {
         if !self.preferred.is_gpu() {
             return GpuFit::NoGpu;
         }
-        match self.gpu_vram_mb {
+        // GPU integrada não tem VRAM própria: o que conta é a memória que ela
+        // pode tomar emprestada da RAM (e, nesse caso, a RAM livre de verdade).
+        let budget = if self.gpu_integrated {
+            match (self.gpu_shared_mb, self.ram_free_mb) {
+                (Some(shared), Some(free)) => Some(shared.min(free)),
+                (Some(shared), None) => Some(shared),
+                (None, free) => free,
+            }
+        } else {
+            self.gpu_vram_mb
+        };
+        match budget {
             None => GpuFit::Unknown,
             Some(vram) => {
                 let needed = (model_bytes as f64 * (1.0 + self.performance.vram_margin())) / (1024.0 * 1024.0);
@@ -716,6 +732,22 @@ mod tests {
         assert_eq!(b.device_for(Role::Transcribe), Device::Cpu);
         assert_eq!(b.device_for(Role::Synthesize), Device::Vulkan);
         assert_eq!(b.device_for(Role::Translate), Device::Cpu);
+    }
+
+    #[test]
+    fn separation_never_on_integrated_gpu() {
+        assert_eq!(with_gpu(true).device_for(Role::Separate), Device::Cpu);
+        assert_eq!(with_gpu(true).with_mode(DeviceMode::Gpu).device_for(Role::Separate), Device::Cpu);
+        assert_eq!(with_gpu(false).device_for(Role::Separate), Device::Vulkan);
+    }
+
+    #[test]
+    fn integrated_gpu_fit_uses_shared_memory() {
+        let mut b = with_gpu(true);
+        b.gpu_vram_mb = Some(128);
+        b.gpu_shared_mb = Some(8_000);
+        b.ram_free_mb = Some(4_000);
+        assert!(matches!(b.gpu_fits(500 * 1024 * 1024), GpuFit::Fits { .. }));
     }
 
     #[test]
