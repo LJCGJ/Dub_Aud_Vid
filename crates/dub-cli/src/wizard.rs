@@ -73,7 +73,7 @@ pub fn run(initial_source: Option<String>) -> Result<Choices> {
     let has_gpu = !doc.gpu_backends.is_empty() && doc.devices.iter().any(|d| d != "CPU");
     let device_items: Vec<(DeviceMode, String)> = if has_gpu {
         vec![
-            (DeviceMode::Auto, format!("Automático — decide pelo hardware ({auto_plan})")),
+            (DeviceMode::Auto, format!("Automático — {auto_plan}")),
             (DeviceMode::Split, "Dividir — transcrição na CPU e voz na GPU, em paralelo".into()),
             (DeviceMode::Gpu, "Só GPU — tudo que tiver backend vai para a GPU".into()),
             (DeviceMode::Cpu, "Só CPU — ignora a GPU".into()),
@@ -83,11 +83,14 @@ pub fn run(initial_source: Option<String>) -> Result<Choices> {
     };
     let rec = doc.recommended.clone();
     let rec_mark = |yes: bool| if yes { " (recomendado)" } else { "" };
+    if let Some(r) = &rec {
+        eprintln!("  recomendado: {} — {}", r.device.value, r.device.reason);
+    }
     let device_items: Vec<(DeviceMode, String)> = device_items
         .into_iter()
         .map(|(d, l)| {
             let is_rec = rec.as_ref().map(|r| r.device.value == d).unwrap_or(false);
-            (d, if is_rec { format!("{l}{} — {}", rec_mark(true), rec.as_ref().unwrap().device.reason) } else { l })
+            (d, format!("{l}{}", rec_mark(is_rec)))
         })
         .collect();
     let dev_default =
@@ -103,9 +106,12 @@ pub fn run(initial_source: Option<String>) -> Result<Choices> {
     .into_iter()
     .map(|(p, l)| {
         let is_rec = rec.as_ref().map(|r| r.performance.value == p).unwrap_or(false);
-        (p, if is_rec { format!("{l}{} — {}", rec_mark(true), rec.as_ref().unwrap().performance.reason) } else { l })
+        (p, format!("{l}{}", rec_mark(is_rec)))
     })
     .collect();
+    if let Some(r) = &rec {
+        eprintln!("  recomendado: {:?} — {}", r.performance.value, r.performance.reason);
+    }
     let perf_default =
         perf_items.iter().position(|(p, _)| rec.as_ref().map(|r| r.performance.value == *p).unwrap_or(false)).unwrap_or(0);
     let performance = pick(&theme, "Uso do hardware", &perf_items, perf_default)?;
@@ -148,9 +154,34 @@ pub fn run(initial_source: Option<String>) -> Result<Choices> {
     Ok(Choices { source, device, performance, whisper_model, voice, out: Some(out) })
 }
 
+/// Largura útil do terminal para uma linha de opção. O menu redesenha
+/// contando uma linha por opção; se a opção quebrar em duas, ele sobe linhas
+/// demais e apaga o que estava acima — por isso toda opção é cortada aqui.
+fn option_width() -> usize {
+    let cols = dialoguer::console::Term::stderr().size().1 as usize;
+    cols.clamp(40, 200).saturating_sub(4)
+}
+
+fn clip(label: &str, width: usize) -> String {
+    let n = label.chars().count();
+    if n <= width {
+        return label.to_string();
+    }
+    let mut out: String = label.chars().take(width.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+/// Menu de uma escolha, com as opções cortadas na largura do terminal.
+fn select(theme: &ColorfulTheme, prompt: &str, labels: &[String], default: usize) -> Result<usize> {
+    let width = option_width();
+    let clipped: Vec<String> = labels.iter().map(|l| clip(l, width)).collect();
+    Ok(Select::with_theme(theme).with_prompt(prompt).items(&clipped).default(default).interact()?)
+}
+
 fn pick<T: Copy>(theme: &ColorfulTheme, prompt: &str, items: &[(T, String)], default: usize) -> Result<T> {
-    let labels: Vec<&str> = items.iter().map(|(_, l)| l.as_str()).collect();
-    let i = Select::with_theme(theme).with_prompt(prompt).items(&labels).default(default).interact()?;
+    let labels: Vec<String> = items.iter().map(|(_, l)| l.clone()).collect();
+    let i = select(theme, prompt, &labels, default)?;
     Ok(items[i].0)
 }
 
@@ -179,21 +210,20 @@ fn pick_model(
                 InstallStatus::Installed(_) => String::new(),
                 InstallStatus::Missing => format!("  [baixar {} MB]", m.total_mb()),
             };
-            let rec = if m.name == preferred {
-                format!(" (recomendado){}", preferred_reason.map(|r| format!(" — {r}")).unwrap_or_default())
-            } else {
-                String::new()
-            };
-            format!("{mark} {:<28} {}{rec}{extra}", m.name, m.description)
+            let rec = if m.name == preferred { " (recomendado)" } else { "" };
+            format!("{mark} {:<24} {}{rec}{extra}", m.name, m.description)
         })
         .collect();
+    if let Some(reason) = preferred_reason {
+        eprintln!("  recomendado: {preferred} — {reason}");
+    }
     // Padrão: o recomendado (instalado ou não — ele baixa), senão o primeiro instalado.
     let default = entries
         .iter()
         .position(|(m, _)| m.name == preferred)
         .or_else(|| entries.iter().position(|(_, st)| matches!(st, InstallStatus::Installed(_))))
         .unwrap_or(0);
-    let i = Select::with_theme(theme).with_prompt(prompt).items(&labels).default(default).interact()?;
+    let i = select(theme, prompt, &labels, default)?;
     let (entry, status) = &entries[i];
     if matches!(status, InstallStatus::Missing) {
         download_entry(entry)?;
@@ -216,10 +246,10 @@ fn pick_voice(theme: &ColorfulTheme) -> Result<String> {
             let st = if v.installed { "✔" } else { " " };
             let extra = if v.installed { String::new() } else { format!("  [baixar {} MB]", v.download_mb) };
             let rec = if v.name == dub_runtime::voices::AUTO_VOICE { " (recomendado)" } else { "" };
-            format!("{st} {mark} {:<20}{rec} {}{extra}", v.name, v.description)
+            format!("{st} {mark} {:<18}{rec} {}{extra}", v.name, v.description)
         })
         .collect();
-    let i = Select::with_theme(theme).with_prompt("Voz da dublagem").items(&labels).default(0).interact()?;
+    let i = select(theme, "Voz da dublagem", &labels, 0)?;
     let chosen = &voices[i];
     // "auto" precisa das duas vozes padrão; uma voz específica precisa dela mesma.
     let needed: Vec<&str> = if chosen.name == dub_runtime::voices::AUTO_VOICE {
