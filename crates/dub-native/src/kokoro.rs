@@ -27,8 +27,10 @@ const VOICES_FILE: &str = "voices-v1.0.bin";
 
 pub struct KokoroSynthesizer {
     engine: OrtEngine,
-    /// Estilo da voz escolhida: 510 vetores de 256 (um por comprimento de frase).
-    style: Vec<f32>,
+    /// Estilos por voz: 510 vetores de 256 (um por comprimento de frase). O
+    /// modelo é um só; só o vetor de estilo muda de voz para voz.
+    styles: HashMap<String, Vec<f32>>,
+    /// Voz padrão (usada por `synthesize`).
     voice: String,
     vocab: HashMap<char, i64>,
     pub sentence_silence: f32,
@@ -55,13 +57,34 @@ pub fn is_kokoro_voice(name: &str) -> bool {
 
 impl KokoroSynthesizer {
     pub fn load(voice: &str, device: Device, threads: usize) -> Result<Self> {
+        Self::load_many(&[voice], device, threads)
+    }
+
+    /// Carrega o modelo uma vez com várias vozes; a primeira é a padrão.
+    pub fn load_many(voices: &[&str], device: Device, threads: usize) -> Result<Self> {
         let dir = model_dir()?;
         let device = effective_device(device);
-        info!(%voice, %device, "carregando Kokoro");
+        info!(voices = ?voices, %device, "carregando Kokoro");
         let engine = OrtEngine::open("kokoro", &dir.join(MODEL_FILE), device, threads)?;
-        let style = load_voice(&dir.join(VOICES_FILE), voice)?;
+        let mut styles = HashMap::new();
+        for v in voices {
+            styles.insert((*v).to_string(), load_voice(&dir.join(VOICES_FILE), v)?);
+        }
         let vocab = KOKORO_VOCAB.iter().copied().collect();
-        Ok(Self { engine, style, voice: voice.to_string(), vocab, sentence_silence: 0.2 })
+        Ok(Self { engine, styles, voice: voices[0].to_string(), vocab, sentence_silence: 0.2 })
+    }
+
+    pub fn voices(&self) -> Vec<String> {
+        self.styles.keys().cloned().collect()
+    }
+
+    /// Sintetiza com uma voz específica já carregada.
+    pub fn synthesize_with_voice(&self, voice: &str, text: &str, lang: &Lang, speed: f32) -> Result<AudioBuffer> {
+        let style = self.styles.get(voice).ok_or_else(|| DubError::EngineUnavailable {
+            engine: "kokoro".into(),
+            reason: format!("voz '{voice}' não carregada (carregadas: {})", self.voices().join(", ")),
+        })?;
+        self.synthesize_style(style, text, lang, speed)
     }
 
     pub fn model_available() -> bool {
@@ -76,13 +99,13 @@ impl KokoroSynthesizer {
         phonemes.iter().filter_map(|c| self.vocab.get(c).copied()).collect()
     }
 
-    fn run_sentence(&self, ids: &[i64], speed: f32) -> Result<Vec<f32>> {
+    fn run_sentence(&self, style: &[f32], ids: &[i64], speed: f32) -> Result<Vec<f32>> {
         let n = ids.len().min(MAX_TOKENS);
         let mut tokens = Vec::with_capacity(n + 2);
         tokens.push(0);
         tokens.extend_from_slice(&ids[..n]);
         tokens.push(0);
-        let style_row = self.style[n * STYLE_DIM..(n + 1) * STYLE_DIM].to_vec();
+        let style_row = style[n * STYLE_DIM..(n + 1) * STYLE_DIM].to_vec();
         self.engine.run(|session| {
             let tokens_t = Tensor::from_array(([1usize, tokens.len()], tokens.clone())).map_err(ort_err)?;
             let style_t = Tensor::from_array(([1usize, STYLE_DIM], style_row.clone())).map_err(ort_err)?;
@@ -171,8 +194,8 @@ impl Engine for KokoroSynthesizer {
     }
 }
 
-impl Synthesizer for KokoroSynthesizer {
-    fn synthesize(&self, text: &str, lang: &Lang, _speaker_ref: Option<&Path>, speed: f32) -> Result<AudioBuffer> {
+impl KokoroSynthesizer {
+    fn synthesize_style(&self, style: &[f32], text: &str, lang: &Lang, speed: f32) -> Result<AudioBuffer> {
         if text.trim().is_empty() {
             return Ok(AudioBuffer::new(SAMPLE_RATE, vec![]));
         }
@@ -190,12 +213,18 @@ impl Synthesizer for KokoroSynthesizer {
             if ids.len() <= 2 {
                 continue;
             }
-            out.extend(self.run_sentence(&ids, speed.clamp(0.5, 2.0))?);
+            out.extend(self.run_sentence(style, &ids, speed.clamp(0.5, 2.0))?);
             if i + 1 < n {
                 out.extend_from_slice(&gap);
             }
         }
         Ok(AudioBuffer::new(SAMPLE_RATE, out))
+    }
+}
+
+impl Synthesizer for KokoroSynthesizer {
+    fn synthesize(&self, text: &str, lang: &Lang, _speaker_ref: Option<&Path>, speed: f32) -> Result<AudioBuffer> {
+        self.synthesize_with_voice(&self.voice.clone(), text, lang, speed)
     }
 
     fn supports_speed(&self) -> bool {

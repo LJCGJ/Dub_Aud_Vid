@@ -21,7 +21,7 @@
 use crate::audio::AudioBuffer;
 use crate::engines::EngineSet;
 use crate::error::{DubError, Result};
-use crate::segment::{Lang, Segment};
+use crate::segment::{Lang, Segment, Speaker};
 use crate::timing::{plan_all, TimingConfig};
 use crossbeam_channel::{bounded, Sender};
 use serde::{Deserialize, Serialize};
@@ -100,6 +100,8 @@ pub struct PipelineConfig {
     /// Com voz isolada, ajustar início/fim de cada trecho ao instante em que a
     /// voz original realmente soa (o whisper marca com folga, sobretudo em canto).
     pub align_to_voice: bool,
+    /// Aproximar a dublagem da voz original: tom (até ±4 semitons) e brilho.
+    pub match_voice: bool,
     /// Volume do fundo original na mixagem final (0..1).
     pub background_gain: f32,
     /// Sem separador de voz/fundo, o áudio original inteiro vira o fundo e é
@@ -126,6 +128,7 @@ impl Default for PipelineConfig {
             diarize: true,
             detect_gender: true,
             align_to_voice: true,
+            match_voice: true,
             background_gain: 0.9,
             duck_gain: 0.2,
             voice_gain: 1.0,
@@ -385,6 +388,7 @@ impl Pipeline {
         // Worker de síntese (GPU se houver) --------------------------------
         let cancel_s = self.cancel.clone();
         let cfg_s = self.config.clone();
+        let stretcher_s = self.stretcher.clone();
         let s_handle = thread::Builder::new().name("dub-synth".into()).spawn(move || -> Result<()> {
             let mut done = 0usize;
             let use_ref = synthesizer.supports_voice_cloning();
@@ -408,8 +412,11 @@ impl Pipeline {
                         // Primeira estimativa de velocidade: proporção de caracteres
                         // (barato e já evita um segundo passe de TTS na maioria dos casos).
                         let speed_hint = if pass_speed { estimate_speed(&seg.source_text, &text, &cfg_s.timing) } else { 1.0 };
-                        let audio =
+                        let mut audio =
                             synthesizer.synthesize_segment(&seg, &text, &cfg_s.target_lang, ref_path.as_deref(), speed_hint)?;
+                        if cfg_s.match_voice {
+                            match_voice(&mut audio, &seg, stretcher_s.as_ref())?;
+                        }
                         let p = synth_dir.join(format!("seg_{:05}.wav", seg.index));
                         audio.write_wav(&p)?;
                         seg.dubbed_wav = Some(p);
@@ -630,14 +637,80 @@ pub fn snap_to_voice(segments: &mut [Segment], voice: &AudioBuffer) -> usize {
     moved
 }
 
+/// Agrupa trechos em "falantes" pelo tom: ordena os f0 e corta onde dois
+/// vizinhos distam mais de 20%. Trechos sem f0 vão para o grupo mais próximo
+/// no tempo. Só roda quando não há diarização.
+fn cluster_by_pitch(segments: &mut [Segment], f0s: &[Option<f32>]) {
+    let mut known: Vec<(usize, f32)> = f0s.iter().enumerate().filter_map(|(i, f)| f.map(|v| (i, v))).collect();
+    if known.len() < 2 {
+        for s in segments.iter_mut() {
+            s.speaker = Some(Speaker("voz-1".into()));
+        }
+        return;
+    }
+    known.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    let mut cluster_of = vec![0usize; segments.len()];
+    let mut c = 0usize;
+    let mut assigned = vec![false; segments.len()];
+    cluster_of[known[0].0] = 0;
+    assigned[known[0].0] = true;
+    for w in known.windows(2) {
+        if w[1].1 / w[0].1 > 1.2 {
+            c += 1;
+        }
+        cluster_of[w[1].0] = c;
+        assigned[w[1].0] = true;
+    }
+    // Sem f0: herda do trecho anterior (ou do próximo).
+    let mut last = cluster_of[known[0].0];
+    for i in 0..segments.len() {
+        if assigned[i] {
+            last = cluster_of[i];
+        } else {
+            cluster_of[i] = last;
+        }
+    }
+    for (s, k) in segments.iter_mut().zip(&cluster_of) {
+        s.speaker = Some(Speaker(format!("voz-{}", k + 1)));
+    }
+}
+
+/// Aproxima a dublagem da voz original do trecho: desloca o tom até o f0
+/// original (±4 semitons) e inclina o espectro na direção do brilho original.
+pub fn match_voice(audio: &mut AudioBuffer, seg: &Segment, stretcher: &dyn Stretcher) -> Result<()> {
+    if let (Some(target), Some(current)) = (seg.f0_hz, audio.median_f0()) {
+        let ratio = (target / current).clamp(0.794, 1.26); // ±4 semitons
+        if (ratio - 1.0).abs() > 0.03 {
+            *audio = audio.pitch_shifted(ratio, stretcher)?;
+        }
+    }
+    if let (Some(target), Some(current)) = (seg.brightness, audio.brightness()) {
+        if current > 1e-4 {
+            let tilt = ((target / current).ln() * 0.5).clamp(-0.5, 0.5);
+            audio.tilt(tilt);
+        }
+    }
+    Ok(())
+}
+
 /// Estima o gênero de cada segmento pelo f0 do trecho na voz isolada. Com
 /// diarização, cada falante recebe o voto majoritário (ponderado pela
 /// duração) dos seus trechos, para a voz não trocar no meio de uma fala.
 pub fn estimate_genders(segments: &mut [Segment], voice: &AudioBuffer) {
     use std::collections::HashMap;
     let mut per_seg: Vec<Option<f32>> = Vec::with_capacity(segments.len());
-    for s in segments.iter() {
-        per_seg.push(voice.slice_seconds(s.start, s.end).median_f0());
+    for s in segments.iter_mut() {
+        let piece = voice.slice_seconds(s.start, s.end);
+        let f0 = piece.median_f0();
+        s.f0_hz = f0;
+        s.brightness = piece.brightness();
+        per_seg.push(f0);
+    }
+    // Sem diarização, agrupa os trechos por faixa de tom: vozes diferentes
+    // costumam ficar a mais de ~20% uma da outra. Dá "falantes" aproximados
+    // para a voz da dublagem não ser a mesma para todo mundo.
+    if segments.iter().all(|s| s.speaker.is_none()) {
+        cluster_by_pitch(segments, &per_seg);
     }
     // Voto por falante: soma de durações por gênero.
     let mut votes: HashMap<String, (f64, f64)> = HashMap::new(); // (masc, fem)
@@ -663,6 +736,27 @@ pub fn estimate_genders(segments: &mut [Segment], voice: &AudioBuffer) {
             None
         }
     };
+    // Tom por falante (mediana), para a voz não oscilar trecho a trecho.
+    let mut spk_f0: HashMap<String, Vec<f32>> = HashMap::new();
+    for (s, f0) in segments.iter().zip(&per_seg) {
+        if let (Some(spk), Some(f0)) = (&s.speaker, f0) {
+            spk_f0.entry(spk.0.clone()).or_default().push(*f0);
+        }
+    }
+    let spk_median: HashMap<String, f32> = spk_f0
+        .into_iter()
+        .map(|(k, mut v)| {
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            (k, v[v.len() / 2])
+        })
+        .collect();
+    for s in segments.iter_mut() {
+        if let Some(spk) = &s.speaker {
+            if let Some(m) = spk_median.get(&spk.0) {
+                s.f0_hz = Some(*m);
+            }
+        }
+    }
     for (s, f0) in segments.iter_mut().zip(&per_seg) {
         s.gender = match (&s.speaker, f0) {
             (Some(spk), _) if votes.get(&spk.0).map(|(m, f)| m + f > 0.0).unwrap_or(false) => {

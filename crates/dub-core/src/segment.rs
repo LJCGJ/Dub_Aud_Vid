@@ -82,6 +82,12 @@ pub struct Segment {
     /// Gênero estimado da voz original (para escolher a voz da dublagem).
     #[serde(default)]
     pub gender: Option<Gender>,
+    /// Tom mediano (Hz) da voz original neste trecho (ou do falante).
+    #[serde(default)]
+    pub f0_hz: Option<f32>,
+    /// "Brilho" da voz original: fração da energia acima de ~2 kHz (0..1).
+    #[serde(default)]
+    pub brightness: Option<f32>,
     /// Trecho tem sobreposição de falas detectada.
     pub overlapped: bool,
     /// Texto no idioma original.
@@ -102,6 +108,8 @@ impl Segment {
             end,
             speaker: None,
             gender: None,
+            f0_hz: None,
+            brightness: None,
             overlapped: false,
             source_text: source_text.into(),
             target_text: None,

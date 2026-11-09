@@ -216,20 +216,60 @@ pub fn build(choice: &EngineChoice, backend: &Backend, work_dir: &Path) -> Resul
         };
     let voice_name = choice.voice.clone().unwrap_or_else(|| crate::voices::AUTO_VOICE.to_string());
     let synthesizer: Arc<dyn Synthesizer> = if voice_name == crate::voices::AUTO_VOICE {
+        // Candidatas: as vozes pedidas (--voice-male/--voice-female) mais todas
+        // as do Kokoro em português, num único modelo carregado. Cada falante
+        // recebe a de tom mais próximo; o pipeline afina o resto.
+        use crate::voices::{gender_of, typical_f0, VoiceBackend, VoiceCandidate};
         let male_name = choice.voice_male.clone().unwrap_or_else(|| crate::voices::DEFAULT_MALE_VOICE.into());
         let female_name = choice.voice_female.clone().unwrap_or_else(|| crate::voices::DEFAULT_FEMALE_VOICE.into());
-        let male = resolve_voice(&male_name, &mut py_env, &mut native_roles)?;
-        let female = match resolve_voice(&female_name, &mut py_env, &mut native_roles) {
-            Ok(f) => f,
-            Err(e) => {
-                warn!(
-                    "voz feminina '{female_name}' indisponível ({e}); usando a masculina para todos os trechos (rode `dub models download kokoro-v1.0`)"
-                );
-                male.clone()
+        let mut candidates: Vec<VoiceCandidate> = Vec::new();
+        let mut kokoro_wanted: Vec<String> = Vec::new();
+        for name in [male_name.as_str(), female_name.as_str()] {
+            if crate::voices::is_kokoro_voice(name) {
+                kokoro_wanted.push(name.to_string());
+            } else {
+                match resolve_voice(name, &mut py_env, &mut native_roles) {
+                    Ok(s) => candidates.push(VoiceCandidate {
+                        name: name.to_string(),
+                        gender: gender_of(name),
+                        f0: typical_f0(name),
+                        backend: VoiceBackend::Own(s),
+                    }),
+                    Err(e) => warn!("voz '{name}' indisponível ({e})"),
+                }
             }
-        };
+        }
+        #[cfg(feature = "native")]
+        {
+            for (n, _, _) in dub_native::kokoro::PT_VOICES {
+                if !kokoro_wanted.iter().any(|k| k == n) {
+                    kokoro_wanted.push((*n).to_string());
+                }
+            }
+            let refs: Vec<&str> = kokoro_wanted.iter().map(String::as_str).collect();
+            match dub_native::KokoroSynthesizer::load_many(&refs, gpu, cpu_threads) {
+                Ok(k) => {
+                    native_roles.push("synthesizer");
+                    let k = Arc::new(k);
+                    for n in &kokoro_wanted {
+                        candidates.push(VoiceCandidate {
+                            name: n.clone(),
+                            gender: gender_of(n),
+                            f0: typical_f0(n),
+                            backend: VoiceBackend::Kokoro(k.clone()),
+                        });
+                    }
+                }
+                Err(e) => warn!(
+                    "Kokoro indisponível ({e}); sem voz feminina — todos os trechos com a masculina (rode `dub models download kokoro-v1.0`)"
+                ),
+            }
+        }
+        if candidates.is_empty() {
+            return Err(anyhow!("nenhuma voz disponível para o modo automático"));
+        }
         native_roles.dedup();
-        Arc::new(crate::voices::GenderRouter { male, female, male_name, female_name })
+        Arc::new(crate::voices::VoiceRouter { candidates })
     } else {
         resolve_voice(&voice_name, &mut py_env, &mut native_roles)?
     };

@@ -194,7 +194,17 @@ fundo separados, cada segmento sintetizado, `dub_mix.wav`, e duas legendas:
 `dub.srt` com a tradução e `dub.src.srt` com o texto reconhecido no idioma
 original — útil para ver se um erro nasceu no ouvido ou na tradução).
 
-**Voz masculina ou feminina, automaticamente (padrão):** as quatro vozes
+**Uma voz por falante, parecida com a original (padrão):** com `--voice auto`
+o pipeline agrupa os trechos por falante (diarização, ou — sem ela — por faixa
+de tom), escolhe entre as vozes disponíveis a do mesmo gênero com o tom mais
+próximo (pf_dora ♀ ≈ 188 Hz; pm_alex ≈ 130, pm_santa ≈ 135, faber ≈ 188 ♂),
+e ainda ajusta cada trecho à voz original: desloca o tom até o f0 medido (até
+±4 semitons, com o WSOLA) e inclina o espectro na direção do brilho original.
+Não é clonagem — é uma aproximação, como a dublagem automática do YouTube.
+A mixagem preserva o estéreo do instrumental, com a dublagem no centro, e o
+início/fim de cada frase é alinhado ao instante em que a voz original soa.
+
+**Voz masculina ou feminina, automaticamente:** as quatro vozes
 pt-BR do Piper são masculinas; a voz feminina vem do **Kokoro** (82M, ONNX, no
 mesmo ONNX Runtime — `pf_dora`; também `pm_alex`/`pm_santa`). Com
 `--voice auto`, o pipeline estima o tom (f0, método YIN) de cada trecho na voz

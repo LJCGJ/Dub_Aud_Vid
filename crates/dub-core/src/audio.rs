@@ -229,6 +229,63 @@ impl AudioBuffer {
         Some(f0s[f0s.len() / 2])
     }
 
+    /// "Brilho": fração da energia acima de ~2 kHz (filtro de um polo), 0..1.
+    /// Serve para aproximar o timbre da dublagem ao da voz original.
+    pub fn brightness(&self) -> Option<f32> {
+        if self.samples.len() < 1024 {
+            return None;
+        }
+        let rc = 1.0 / (2.0 * std::f32::consts::PI * 2000.0);
+        let dt = 1.0 / self.sample_rate as f32;
+        let alpha = rc / (rc + dt); // passa-altas de um polo
+        let mut hp = 0.0f32;
+        let mut prev = self.samples[0];
+        let mut e_hp = 0.0f64;
+        let mut e_all = 0.0f64;
+        for &x in &self.samples {
+            hp = alpha * (hp + x - prev);
+            prev = x;
+            e_hp += (hp * hp) as f64;
+            e_all += (x * x) as f64;
+        }
+        if e_all <= 1e-9 {
+            return None;
+        }
+        Some((e_hp / e_all).clamp(0.0, 1.0) as f32)
+    }
+
+    /// Inclina o espectro: `tilt` > 0 realça agudos, < 0 abafa (±0,6 no máximo).
+    /// Um polo em ~1,5 kHz; não é um equalizador de estúdio, é um ajuste suave.
+    pub fn tilt(&mut self, tilt: f32) {
+        let k = tilt.clamp(-0.6, 0.6);
+        if k.abs() < 1e-3 || self.samples.is_empty() {
+            return;
+        }
+        let rc = 1.0 / (2.0 * std::f32::consts::PI * 1500.0);
+        let dt = 1.0 / self.sample_rate as f32;
+        let a = dt / (rc + dt); // passa-baixas de um polo
+        let mut lp = self.samples[0];
+        for x in self.samples.iter_mut() {
+            lp += a * (*x - lp);
+            let hp = *x - lp;
+            *x += k * hp;
+        }
+    }
+
+    /// Muda o tom por `ratio` (2.0 = uma oitava acima) mantendo a duração:
+    /// estica com `stretcher` e reamostra de volta. Para ajustes de até ±4
+    /// semitons a qualidade do WSOLA é boa; além disso a voz fica artificial.
+    pub fn pitch_shifted(&self, ratio: f32, stretcher: &dyn crate::pipeline::Stretcher) -> Result<AudioBuffer> {
+        if (ratio - 1.0).abs() < 0.01 || self.samples.is_empty() {
+            return Ok(self.clone());
+        }
+        // Mais longo por `ratio` (speed = 1/ratio), depois tocado `ratio` vezes
+        // mais rápido reinterpretando a taxa de amostragem.
+        let longer = stretcher.stretch(self, 1.0 / ratio)?;
+        let fast = AudioBuffer::new((self.sample_rate as f32 * ratio).round() as u32, longer.samples);
+        Ok(fast.resampled(self.sample_rate))
+    }
+
     /// Recorta `[start, end)` em segundos.
     pub fn slice_seconds(&self, start: f64, end: f64) -> AudioBuffer {
         let sr = self.sample_rate as f64;

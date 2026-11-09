@@ -102,29 +102,106 @@ pub fn is_kokoro_voice(name: &str) -> bool {
     }
 }
 
-/// Escolhe entre uma voz masculina e uma feminina pelo gênero do segmento.
-pub struct GenderRouter {
-    pub male: Arc<dyn Synthesizer>,
-    pub female: Arc<dyn Synthesizer>,
-    pub male_name: String,
-    pub female_name: String,
+/// Tom típico (Hz) de cada voz conhecida, medido com o mesmo estimador (YIN)
+/// usado nos trechos originais. Serve para escolher a voz mais próxima do
+/// falante e para o deslocamento fino de tom ficar pequeno.
+pub fn typical_f0(voice: &str) -> f32 {
+    match voice {
+        "pf_dora" => 188.0,
+        "pm_alex" => 130.0,
+        "pm_santa" => 135.0,
+        "pt_BR-faber-medium" => 188.0,
+        "pt_BR-edresson-low" => 120.0,
+        "pt_BR-cadu-medium" => 125.0,
+        "pt_BR-jeff-medium" => 125.0,
+        v if is_kokoro_voice(v) && v.as_bytes()[1] == b'f' => 200.0,
+        _ => 130.0,
+    }
 }
 
-impl Engine for GenderRouter {
-    fn info(&self) -> EngineInfo {
-        let m = self.male.info();
-        let f = self.female.info();
-        EngineInfo {
-            name: "auto".into(),
-            model: format!("{} ♂ / {} ♀", self.male_name, self.female_name),
-            device: if m.device == f.device { m.device } else { format!("{} / {}", m.device, f.device) },
+pub fn gender_of(voice: &str) -> Gender {
+    if voice == "pf_dora" || (is_kokoro_voice(voice) && voice.as_bytes()[1] == b'f') {
+        Gender::Female
+    } else {
+        Gender::Male
+    }
+}
+
+/// Como uma voz candidata é sintetizada.
+pub enum VoiceBackend {
+    /// Um sintetizador dedicado (Piper: um modelo por voz).
+    Own(Arc<dyn Synthesizer>),
+    /// Uma voz do Kokoro compartilhando o mesmo modelo carregado.
+    #[cfg(feature = "native")]
+    Kokoro(Arc<dub_native::KokoroSynthesizer>),
+}
+
+pub struct VoiceCandidate {
+    pub name: String,
+    pub gender: Gender,
+    pub f0: f32,
+    pub backend: VoiceBackend,
+}
+
+impl VoiceCandidate {
+    fn synthesize(&self, seg: &Segment, text: &str, lang: &Lang, speaker_ref: Option<&Path>, speed: f32) -> Result<AudioBuffer> {
+        match &self.backend {
+            VoiceBackend::Own(s) => s.synthesize_segment(seg, text, lang, speaker_ref, speed),
+            #[cfg(feature = "native")]
+            VoiceBackend::Kokoro(k) => k.synthesize_with_voice(&self.name, text, lang, speed),
+        }
+    }
+    fn device(&self) -> String {
+        match &self.backend {
+            VoiceBackend::Own(s) => s.info().device,
+            #[cfg(feature = "native")]
+            VoiceBackend::Kokoro(k) => k.info().device,
         }
     }
 }
 
-impl Synthesizer for GenderRouter {
+/// Escolhe, por trecho, a voz candidata do mesmo gênero com o tom mais
+/// próximo do falante original — e o pipeline ainda afina o resto (±4
+/// semitons). Resultado: cada falante ganha uma voz, como no YouTube.
+pub struct VoiceRouter {
+    pub candidates: Vec<VoiceCandidate>,
+}
+
+impl VoiceRouter {
+    fn pick(&self, gender: Option<Gender>, f0: Option<f32>) -> &VoiceCandidate {
+        let same: Vec<&VoiceCandidate> = match gender {
+            Some(g) => self.candidates.iter().filter(|c| c.gender == g).collect(),
+            None => self.candidates.iter().collect(),
+        };
+        let pool = if same.is_empty() { self.candidates.iter().collect() } else { same };
+        match f0 {
+            Some(f) => pool
+                .into_iter()
+                .min_by(|a, b| (a.f0.ln() - f.ln()).abs().partial_cmp(&(b.f0.ln() - f.ln()).abs()).unwrap())
+                .expect("há candidatas"),
+            None => pool[0],
+        }
+    }
+}
+
+impl Engine for VoiceRouter {
+    fn info(&self) -> EngineInfo {
+        let names: Vec<String> = self
+            .candidates
+            .iter()
+            .map(|c| format!("{} {}", c.name, if c.gender == Gender::Female { "♀" } else { "♂" }))
+            .collect();
+        let mut devices: Vec<String> = self.candidates.iter().map(|c| c.device()).collect();
+        devices.sort();
+        devices.dedup();
+        EngineInfo { name: "auto".into(), model: names.join(" / "), device: devices.join(" / ") }
+    }
+}
+
+impl Synthesizer for VoiceRouter {
     fn synthesize(&self, text: &str, lang: &Lang, speaker_ref: Option<&Path>, speed: f32) -> Result<AudioBuffer> {
-        self.male.synthesize(text, lang, speaker_ref, speed)
+        let seg = Segment::new(0, 0.0, 0.0, "");
+        self.pick(None, None).synthesize(&seg, text, lang, speaker_ref, speed)
     }
 
     fn synthesize_segment(
@@ -135,13 +212,10 @@ impl Synthesizer for GenderRouter {
         speaker_ref: Option<&Path>,
         speed: f32,
     ) -> Result<AudioBuffer> {
-        match segment.gender {
-            Some(Gender::Female) => self.female.synthesize_segment(segment, text, lang, speaker_ref, speed),
-            _ => self.male.synthesize_segment(segment, text, lang, speaker_ref, speed),
-        }
+        self.pick(segment.gender, segment.f0_hz).synthesize(segment, text, lang, speaker_ref, speed)
     }
 
     fn supports_speed(&self) -> bool {
-        self.male.supports_speed() && self.female.supports_speed()
+        true
     }
 }
