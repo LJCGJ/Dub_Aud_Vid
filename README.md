@@ -182,6 +182,9 @@ dub video <arquivo|url> [opções]
   --no-subtitles           não embutir SRT
   --background-gain 0.9    volume do fundo
   --max-speed 1.35         aceleração máxima da fala
+  --content auto           auto | speech | music (o que fazer com trechos cantados)
+  --subs legenda.srt       legenda SRT/VTT no idioma original, no lugar do whisper
+  --no-online-subs         não buscar a legenda do próprio vídeo no YouTube
   --voice auto             auto (♂/♀ por trecho) | pt_BR-faber-medium… (Piper) | pf_dora, pm_alex, pm_santa (Kokoro)
   --voice-male / --voice-female   vozes usadas pelo modo auto (padrão: faber / pf_dora)
   --device auto            auto | cpu | gpu | split (onde cada etapa roda)
@@ -223,6 +226,31 @@ música alta. O modelo faz parte do conjunto padrão (`dub models download`,
 com `--no-separate`, o original inteiro entra como fundo e é abaixado só
 enquanto a voz dublada fala.
 
+**Música e clipes (`--content auto`, padrão):** canto lido por voz sintética
+vira um narrador falando por cima da cantora — não tem como soar bem. Com a
+voz e o instrumental separados, o pipeline mede, trecho a trecho, se a música
+está tão alta quanto a voz; quando o vídeo é majoritariamente assim, esses
+trechos são tratados como **canto**: a voz original volta na mix, a tradução
+vai só para a legenda, e só o que for fala a seco (introdução, diálogo no meio
+do clipe) é dublado. `--content speech` dubla tudo como antes; `--content music`
+força o modo música (útil quando a detecção erra). O resumo no fim informa
+quantos trechos foram tratados como canto.
+
+**Legenda do próprio vídeo:** para links do YouTube, o Dub tenta antes a
+legenda do vídeo no idioma original (a enviada pelo autor e, se não houver, a
+automática do YouTube) e a usa no lugar da transcrição por áudio — em música e
+em vídeos com legenda oficial o texto é muito mais fiel do que o whisper
+ouvindo canto em cima da batida. `--subs arquivo.srt` usa uma legenda local;
+`--no-online-subs` força o whisper.
+
+**Mixagem:** com separação, o instrumental cede espaço (−6 dB) só enquanto a
+dublagem toca e volta ao normal fora dela; o volume final é casado com o do
+áudio original (mesmo RMS), e um limitador suave segura os picos sem abaixar o
+vídeo inteiro. Trechos de transcrição mais longos que 8 s são quebrados antes
+da tradução (pontuação → vírgulas → palavras), para qualquer transcritor; com
+`-v` cada trecho aparece no log com janela, duração do TTS, velocidade e
+transbordo — é por aí que se descobre por que um cue saiu mudo ou corrido.
+
 ## App de desktop
 
 ```bash
@@ -259,6 +287,8 @@ registre em `registry.py` e implemente os métodos do protocolo
 - [x] **Parte 2** — WSOLA em C++, whisper.cpp nativo, Piper nativo (ONNX Runtime + espeak-ng), fallback nativa → Python
 - [x] **Parte 2b** — tradução nativa (CTranslate2), `dub models`, CI em 3 SOs, releases por tag, workflow de conversão de modelos. Fluxo principal 100% sem Python
 - [x] **Parte 3** — app Tauri (dublar, progresso, modelos, configurações, diagnóstico), instalador Windows/macOS/Linux com ffmpeg + yt-dlp + onnxruntime + espeak-ng-data embutidos
+- [x] **Parte 4** — separação voz/instrumental (MDX-Net), voz feminina (Kokoro) com ♂/♀ automático, recomendações por hardware
+- [x] **Parte 5** — modo música (canto original mantido, tradução na legenda), legenda do YouTube como fonte, ducking sidechain + loudness do original, quebra de trechos longos
 - [ ] **Depois** — voz por falante (exige diarização), separação (demucs.cpp) e diarização (sherpa-onnx) nativas, adaptador GameDub
 
 ## Política de assinatura de código

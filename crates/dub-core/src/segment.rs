@@ -57,6 +57,16 @@ impl Gender {
     }
 }
 
+/// Natureza do trecho: fala comum ou canto. Canto não vira TTS — a voz
+/// original fica, e a tradução vai só para a legenda.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SegmentKind {
+    #[default]
+    Speech,
+    Singing,
+}
+
 /// Identificador de falante produzido pela diarização.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Speaker(pub String);
@@ -90,6 +100,9 @@ pub struct Segment {
     pub brightness: Option<f32>,
     /// Trecho tem sobreposição de falas detectada.
     pub overlapped: bool,
+    /// Fala ou canto (ver [`SegmentKind`]).
+    #[serde(default)]
+    pub kind: SegmentKind,
     /// Texto no idioma original.
     pub source_text: String,
     /// Texto traduzido (preenchido pelo `Translator`).
@@ -111,6 +124,7 @@ impl Segment {
             f0_hz: None,
             brightness: None,
             overlapped: false,
+            kind: SegmentKind::Speech,
             source_text: source_text.into(),
             target_text: None,
             dubbed_wav: None,
@@ -121,5 +135,130 @@ impl Segment {
     /// Duração disponível para a dublagem, em segundos.
     pub fn duration(&self) -> f64 {
         (self.end - self.start).max(0.0)
+    }
+
+    pub fn is_singing(&self) -> bool {
+        self.kind == SegmentKind::Singing
+    }
+}
+
+/// Divide trechos longos (> `max_secs`) em pedaços menores, repartindo o tempo
+/// proporcionalmente aos caracteres. Tenta, nesta ordem: pontuação final
+/// (`. ! ?`), vírgulas/ponto-e-vírgula e, por fim, contagem de palavras. Letra
+/// de música e legenda automática raramente têm pontuação — sem isto, um bloco
+/// de 20 s vira uma dublagem única impossível de encaixar.
+pub fn split_long(segs: Vec<Segment>, max_secs: f64) -> Vec<Segment> {
+    let mut out: Vec<Segment> = Vec::with_capacity(segs.len());
+    for s in segs {
+        if s.duration() <= max_secs {
+            out.push(s);
+            continue;
+        }
+        let parts = split_text(&s.source_text, s.duration(), max_secs);
+        if parts.len() < 2 {
+            out.push(s);
+            continue;
+        }
+        let total_chars: usize = parts.iter().map(|t| t.chars().count()).sum::<usize>().max(1);
+        let mut t = s.start;
+        for (i, part) in parts.iter().enumerate() {
+            let frac = part.chars().count() as f64 / total_chars as f64;
+            let end = if i + 1 == parts.len() { s.end } else { t + s.duration() * frac };
+            let mut piece = s.clone();
+            piece.start = t;
+            piece.end = end;
+            piece.source_text = part.clone();
+            piece.target_text = None;
+            out.push(piece);
+            t = end;
+        }
+    }
+    for (i, s) in out.iter_mut().enumerate() {
+        s.index = i;
+    }
+    out
+}
+
+fn split_text(text: &str, duration: f64, max_secs: f64) -> Vec<String> {
+    // Folga de 20%: as palavras não se repartem em pedaços exatamente iguais.
+    let pieces_needed = (duration / (max_secs * 0.8)).ceil().max(2.0) as usize;
+    // 1. Frases.
+    let by_sentence = split_on(text, |c| matches!(c, '.' | '!' | '?'), 12);
+    if by_sentence.len() >= 2 && longest_share(&by_sentence) * duration <= max_secs * 1.25 {
+        return by_sentence;
+    }
+    // 2. Vírgulas e afins (dentro de cada frase).
+    let by_clause: Vec<String> =
+        by_sentence.iter().flat_map(|s| split_on(s, |c| matches!(c, ',' | ';' | ':' | '—'), 10)).collect();
+    if by_clause.len() >= 2 && longest_share(&by_clause) * duration <= max_secs * 1.25 {
+        return by_clause;
+    }
+    // 3. Palavras, em blocos de tamanho parecido.
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.len() < 4 {
+        return vec![text.to_string()];
+    }
+    let n = pieces_needed.min(words.len() / 2).max(2);
+    let per = (words.len() as f64 / n as f64).ceil() as usize;
+    words.chunks(per.max(1)).map(|w| w.join(" ")).collect()
+}
+
+/// Corta o texto depois de cada caractere aceito por `is_sep` (seguido de
+/// espaço ou fim), desde que o pedaço tenha ao menos `min_chars` caracteres.
+fn split_on(text: &str, is_sep: impl Fn(char) -> bool, min_chars: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let chars: Vec<char> = text.chars().collect();
+    for (i, &c) in chars.iter().enumerate() {
+        cur.push(c);
+        let at_end = is_sep(c) && chars.get(i + 1).map(|n| n.is_whitespace()).unwrap_or(true);
+        if at_end && cur.trim().chars().count() >= min_chars {
+            out.push(cur.trim().to_string());
+            cur.clear();
+        }
+    }
+    if !cur.trim().is_empty() {
+        out.push(cur.trim().to_string());
+    }
+    out
+}
+
+fn longest_share(parts: &[String]) -> f64 {
+    let total: usize = parts.iter().map(|p| p.chars().count()).sum::<usize>().max(1);
+    parts.iter().map(|p| p.chars().count()).max().unwrap_or(0) as f64 / total as f64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_long_uses_sentences_first() {
+        let s = Segment::new(0, 0.0, 20.0, "First sentence is here. Second one follows it! Third one ends?");
+        let out = split_long(vec![s], 8.0);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].start, 0.0);
+        assert_eq!(out[2].end, 20.0);
+        assert!(out[1].start > out[0].start && out[1].end > out[1].start);
+        assert_eq!(out.iter().map(|s| s.index).collect::<Vec<_>>(), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn split_long_falls_back_to_commas_and_words() {
+        // Letra sem pontuação final, com vírgulas.
+        let s = Segment::new(0, 0.0, 20.6, "we drove along the coast, the radio was loud, nobody wanted to go home");
+        let out = split_long(vec![s], 8.0);
+        assert_eq!(out.len(), 3);
+        // Sem pontuação nenhuma: quebra por palavras.
+        let s = Segment::new(0, 0.0, 16.0, "one two three four five six seven eight nine ten eleven twelve");
+        let out = split_long(vec![s], 8.0);
+        assert!(out.len() >= 2, "{out:?}");
+        assert!(out.iter().all(|p| p.duration() <= 8.5));
+    }
+
+    #[test]
+    fn split_long_keeps_short_segments() {
+        let out = split_long(vec![Segment::new(0, 0.0, 5.0, "short one"), Segment::new(1, 5.0, 7.0, "and two")], 8.0);
+        assert_eq!(out.len(), 2);
     }
 }

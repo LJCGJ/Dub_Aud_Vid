@@ -141,6 +141,9 @@ pub fn start_dub(app: AppHandle, state: State<'_, AppState>, args: StartArgs) ->
         background_gain: s.background_gain,
         max_speed: s.max_speed,
         ffmpeg_stretch: false,
+        content: s.content,
+        subtitles: None,
+        online_subtitles: s.online_subtitles,
     };
 
     let cancel = Arc::new(AtomicBool::new(false));

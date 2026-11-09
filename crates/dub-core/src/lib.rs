@@ -16,11 +16,13 @@ pub mod error;
 pub mod paths;
 pub mod pipeline;
 pub mod segment;
+pub mod subtitles;
 pub mod timing;
 
 pub use audio::AudioBuffer;
 pub use backend::{Backend, Device, DeviceMode, DevicePlan, GpuFit, GpuKind, Performance, Role};
 pub use engines::{Diarizer, EngineSet, Separator, Synthesizer, Transcriber, Translator};
 pub use error::{DubError, Result};
-pub use pipeline::{DubJob, Pipeline, PipelineConfig, Progress, Stage};
-pub use segment::{Gender, Lang, Segment, Speaker};
+pub use pipeline::{ContentMode, DubJob, Pipeline, PipelineConfig, Progress, Stage};
+pub use segment::{Gender, Lang, Segment, SegmentKind, Speaker};
+pub use subtitles::SubtitleTranscriber;

@@ -339,6 +339,48 @@ impl AudioBuffer {
         }
     }
 
+    /// Nível RMS (0..1) do buffer inteiro; 0 para áudio vazio.
+    pub fn rms(&self) -> f32 {
+        rms_of(&self.samples)
+    }
+
+    /// Soma `other` apenas dentro das janelas `(início, fim)` em segundos, com
+    /// rampas de `fade` s nas bordas. Usado para devolver a voz original nos
+    /// trechos cantados, sem estalos onde a dublagem entra e sai.
+    pub fn mix_windows(&mut self, other: &AudioBuffer, windows: &[(f64, f64)], gain: f32, fade: f64) -> Result<()> {
+        if other.sample_rate != self.sample_rate {
+            return Err(DubError::Audio(format!(
+                "sample rate incompatível na mixagem: {} vs {}",
+                self.sample_rate, other.sample_rate
+            )));
+        }
+        let sr = self.sample_rate as f64;
+        let fade_n = (fade * sr).max(1.0);
+        for &(start, end) in windows {
+            if end <= start {
+                continue;
+            }
+            let s0 = ((start - fade) * sr).floor().max(0.0) as usize;
+            let s1 = (((end + fade) * sr).ceil() as usize).min(other.samples.len());
+            if s1 > self.samples.len() {
+                self.samples.resize(s1, 0.0);
+            }
+            let (a, b) = (start * sr, end * sr);
+            for i in s0..s1 {
+                let t = i as f64;
+                let w = if t < a {
+                    ((t - (a - fade_n)) / fade_n).clamp(0.0, 1.0)
+                } else if t > b {
+                    (((b + fade_n) - t) / fade_n).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                } as f32;
+                self.samples[i] += other.samples[i] * gain * w;
+            }
+        }
+        Ok(())
+    }
+
     /// Normaliza o pico para `peak` (ex.: 0.95) se estiver acima.
     pub fn limit_peak(&mut self, peak: f32) {
         let max = self.samples.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
@@ -349,9 +391,61 @@ impl AudioBuffer {
     }
 }
 
+pub fn rms_of(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    (samples.iter().map(|v| v * v).sum::<f32>() / samples.len() as f32).sqrt()
+}
+
+/// Limitador suave para vários canais: abaixo de `knee` nada muda; acima, a
+/// curva comprime até `ceiling` (tanh), e o ganho é o mesmo em todos os canais
+/// (calculado pelo pico conjunto) para a imagem estéreo não se mover. Ao
+/// contrário de escalar a faixa inteira pelo pico, um estouro isolado não
+/// abaixa o vídeo todo.
+pub fn soft_limit_channels(chans: &mut [Vec<f32>], knee: f32, ceiling: f32) {
+    let n = chans.iter().map(|c| c.len()).max().unwrap_or(0);
+    let range = (ceiling - knee).max(1e-3);
+    for i in 0..n {
+        let peak = chans.iter().map(|c| c.get(i).map(|v| v.abs()).unwrap_or(0.0)).fold(0.0f32, f32::max);
+        if peak <= knee {
+            continue;
+        }
+        let limited = knee + range * ((peak - knee) / range).tanh();
+        let g = limited / peak;
+        for c in chans.iter_mut() {
+            if let Some(v) = c.get_mut(i) {
+                *v *= g;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn soft_limit_keeps_quiet_and_caps_loud() {
+        let mut ch = vec![vec![0.5f32, 1.4, -2.0, 0.1]];
+        soft_limit_channels(&mut ch, 0.8, 0.95);
+        assert_eq!(ch[0][0], 0.5);
+        assert_eq!(ch[0][3], 0.1);
+        assert!(ch[0][1] > 0.8 && ch[0][1] < 0.95);
+        assert!(ch[0][2] < -0.8 && ch[0][2] > -0.95);
+    }
+
+    #[test]
+    fn mix_windows_only_inside() {
+        let mut base = AudioBuffer::silence(100, 3.0);
+        let other = AudioBuffer::new(100, vec![1.0; 300]);
+        base.mix_windows(&other, &[(1.0, 2.0)], 1.0, 0.1).unwrap();
+        assert_eq!(base.samples[50], 0.0);
+        assert!((base.samples[150] - 1.0).abs() < 1e-6);
+        assert_eq!(base.samples[250], 0.0);
+        let edge = base.samples[95];
+        assert!(edge > 0.0 && edge < 1.0, "{edge}");
+    }
 
     #[test]
     fn mix_extends_and_sums() {

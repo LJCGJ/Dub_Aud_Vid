@@ -37,6 +37,20 @@ pub struct JobRequest {
     pub background_gain: f32,
     pub max_speed: f32,
     pub ffmpeg_stretch: bool,
+    /// Fala, música ou decidir por trecho (auto). Em música, o canto original
+    /// fica e só a fala é dublada; a tradução vai para a legenda.
+    #[serde(default)]
+    pub content: dub_core::ContentMode,
+    /// Legenda local (SRT/VTT) no idioma original, no lugar da transcrição.
+    #[serde(default)]
+    pub subtitles: Option<PathBuf>,
+    /// Para URLs do YouTube, tentar a legenda do próprio vídeo antes do whisper.
+    #[serde(default = "default_true")]
+    pub online_subtitles: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for JobRequest {
@@ -57,6 +71,9 @@ impl Default for JobRequest {
             background_gain: 0.9,
             max_speed: 1.35,
             ffmpeg_stretch: false,
+            content: dub_core::ContentMode::Auto,
+            subtitles: None,
+            online_subtitles: true,
         }
     }
 }
@@ -83,6 +100,12 @@ pub struct JobResult {
     pub elapsed_secs: u64,
     /// Segmentos acelerados acima de 1.25x (tradução longa demais para a janela).
     pub rushed_segments: usize,
+    /// Trechos tratados como canto (voz original mantida, tradução só na legenda).
+    #[serde(default)]
+    pub sung_segments: usize,
+    /// De onde veio o texto original: "legenda" (arquivo/YouTube) ou "áudio" (whisper).
+    #[serde(default)]
+    pub transcript_source: String,
 }
 
 /// Eventos emitidos durante o job, na ordem em que acontecem.
@@ -143,9 +166,20 @@ pub fn run_video_job(req: &JobRequest, cancel: Arc<AtomicBool>, mut on_event: im
         message: if dub_media::YtDlp::is_url(&req.source) { "baixando vídeo".into() } else { "abrindo vídeo".into() },
     });
     let tmp_work = req.work_dir.clone().unwrap_or_else(|| PathBuf::from("dub_work").join("_tmp"));
-    let input = VideoInput::open(&req.source, &tmp_work).context("abrir vídeo")?;
+    let sub_lang = if req.online_subtitles && req.subtitles.is_none() {
+        Some(req.source_lang.as_deref().filter(|s| !s.is_empty()).unwrap_or("en").to_string())
+    } else {
+        None
+    };
+    let input = VideoInput::open_with_subtitles(&req.source, &tmp_work, sub_lang.as_deref()).context("abrir vídeo")?;
     let work_dir = req.work_dir.clone().unwrap_or_else(|| PathBuf::from("dub_work").join(sanitize(&input.title)));
-    let input = input.with_work_dir(&work_dir)?;
+    let mut input = input.with_work_dir(&work_dir)?;
+    if let Some(subs) = &req.subtitles {
+        input = input.with_subtitles(subs).context("legenda informada")?;
+    }
+    if let Some(subs) = &input.subtitles {
+        on_event(JobEvent::Status { message: format!("usando legenda: {}", subs.display()) });
+    }
     on_event(JobEvent::Opened { title: input.title.clone(), work_dir: work_dir.clone() });
     check_cancel(&cancel)?;
 
@@ -155,7 +189,13 @@ pub fn run_video_job(req: &JobRequest, cancel: Arc<AtomicBool>, mut on_event: im
 
     // 2. Engines ----------------------------------------------------------
     on_event(JobEvent::Status { message: "carregando engines".into() });
-    let built = engines::build(&req.engines, &backend, &work_dir)?;
+    let mut built = engines::build(&req.engines, &backend, &work_dir)?;
+    if let Some(subs) = &input.subtitles {
+        // Legenda pronta no lugar do whisper: mesmo contrato, texto muito melhor
+        // em música e em vídeos com legenda oficial.
+        built.engines.transcriber = Arc::new(dub_core::SubtitleTranscriber::new(subs));
+        built.native_roles.retain(|r| *r != "transcriber");
+    }
     let lines = built
         .engines
         .describe()
@@ -176,6 +216,7 @@ pub fn run_video_job(req: &JobRequest, cancel: Arc<AtomicBool>, mut on_event: im
         source_lang: req.source_lang.as_deref().filter(|s| !s.is_empty()).map(Lang::from),
         target_lang: Lang::from(req.target_lang.as_str()),
         background_gain: req.background_gain,
+        content: req.content,
         timing: dub_core::timing::TimingConfig { max_speed: req.max_speed, ..Default::default() },
         ..Default::default()
     };
@@ -253,6 +294,8 @@ pub fn run_video_job(req: &JobRequest, cancel: Arc<AtomicBool>, mut on_event: im
         work_dir,
         title: input.title.clone(),
         rushed_segments: output.segments.iter().filter(|s| s.speed_factor > 1.25).count(),
+        sung_segments: output.segments.iter().filter(|s| s.is_singing()).count(),
+        transcript_source: if input.subtitles.is_some() { "legenda".into() } else { "áudio".into() },
         segments: output.segments,
         elapsed_secs: started.elapsed().as_secs(),
     };
