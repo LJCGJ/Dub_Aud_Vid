@@ -114,6 +114,16 @@ struct VideoArgs {
     /// Velocidade máxima da fala dublada para caber no tempo
     #[arg(long, default_value_t = 1.35)]
     max_speed: f32,
+    /// Tipo de conteúdo: auto (decide por trecho), speech (dubla tudo) ou
+    /// music (mantém o canto original e dubla só a fala; tradução na legenda)
+    #[arg(long, default_value = "auto")]
+    content: dub_core::ContentMode,
+    /// Legenda SRT/VTT no idioma original, no lugar da transcrição por áudio
+    #[arg(long)]
+    subs: Option<PathBuf>,
+    /// Não buscar a legenda do próprio vídeo no YouTube (usa sempre o whisper)
+    #[arg(long)]
+    no_online_subs: bool,
     /// Usa engines falsas (teste do pipeline sem modelos)
     #[arg(long, hide = true)]
     mock: bool,
@@ -170,6 +180,7 @@ fn apply_wizard(a: &mut VideoArgs, initial: Option<String>) -> Result<()> {
     a.performance = c.performance;
     a.whisper_model = c.whisper_model;
     a.voice = Some(c.voice);
+    a.content = c.content;
     if a.out.is_none() {
         a.out = c.out;
     }
@@ -263,6 +274,9 @@ fn video(a: VideoArgs) -> Result<()> {
         background_gain: a.background_gain,
         max_speed: a.max_speed,
         ffmpeg_stretch: a.ffmpeg_stretch,
+        content: a.content,
+        subtitles: a.subs,
+        online_subtitles: !a.no_online_subs,
     };
 
     let (tx, rx) = crossbeam_channel::unbounded::<Progress>();
@@ -304,7 +318,13 @@ fn video(a: VideoArgs) -> Result<()> {
     eprintln!("\n✔ pronto em {}m{:02}s", r.elapsed_secs / 60, r.elapsed_secs % 60);
     eprintln!("  vídeo:    {}", r.video.display());
     eprintln!("  legenda:  {} (tradução) e {} (original reconhecido)", r.srt.display(), r.srt_source.display());
-    eprintln!("  segmentos: {}", r.segments.len());
+    eprintln!("  segmentos: {} (texto original vindo de: {})", r.segments.len(), r.transcript_source);
+    if r.sung_segments > 0 {
+        eprintln!(
+            "  ♪ {} trechos cantados: voz original mantida, tradução só na legenda (--content speech para dublar tudo)",
+            r.sung_segments
+        );
+    }
     if r.rushed_segments > 0 {
         eprintln!("  ⚠ {} segmentos acelerados acima de 1.25x (tradução longa)", r.rushed_segments);
     }

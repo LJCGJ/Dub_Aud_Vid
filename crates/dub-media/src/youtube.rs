@@ -65,6 +65,45 @@ impl YtDlp {
         Ok(PathBuf::from(path))
     }
 
+    /// Baixa a legenda do vídeo no idioma `lang` (ex.: `en`) para `out_dir`,
+    /// preferindo a legenda enviada pelo autor e caindo para a automática do
+    /// YouTube. Devolve `None` se o vídeo não tem legenda nesse idioma — isso
+    /// não é erro, o whisper assume.
+    pub fn download_subtitles(&self, url: &str, lang: &str, out_dir: &Path) -> Result<Option<PathBuf>> {
+        std::fs::create_dir_all(out_dir)?;
+        let template = out_dir.join("subs.%(ext)s");
+        // Aceita variantes regionais (en-US, en-GB…) e a automática ("en-orig" etc.).
+        let langs = format!("{lang},{lang}-*,{lang}.*");
+        for (label, flag) in [("enviada", "--write-subs"), ("automática", "--write-auto-subs")] {
+            let out = Command::new(&self.bin)
+                .args([
+                    "--no-playlist",
+                    "--skip-download",
+                    flag,
+                    "--sub-langs",
+                    &langs,
+                    "--sub-format",
+                    "vtt/srt/best",
+                    "--quiet",
+                    "--no-warnings",
+                    "-o",
+                    &template.to_string_lossy(),
+                    url,
+                ])
+                .output()?;
+            if !out.status.success() {
+                let err = String::from_utf8_lossy(&out.stderr);
+                tracing::debug!(%err, "yt-dlp sem legenda {label}");
+                continue;
+            }
+            if let Some(p) = newest_subtitle(out_dir)? {
+                info!(tipo = label, arquivo = %p.display(), "legenda do YouTube baixada");
+                return Ok(Some(p));
+            }
+        }
+        Ok(None)
+    }
+
     /// Título do vídeo (para nomear a saída).
     pub fn title(&self, url: &str) -> Result<String> {
         let out =
@@ -74,4 +113,22 @@ impl YtDlp {
         }
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     }
+}
+
+/// Arquivo de legenda (`.vtt`/`.srt`) mais recente em `dir`. O yt-dlp grava
+/// como `subs.<idioma>.vtt`; se baixou mais de uma variante, a última serve.
+fn newest_subtitle(dir: &Path) -> Result<Option<PathBuf>> {
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    for entry in std::fs::read_dir(dir)? {
+        let p = entry?.path();
+        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+        if ext != "vtt" && ext != "srt" {
+            continue;
+        }
+        let modified = p.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+        if best.as_ref().map(|(t, _)| modified >= *t).unwrap_or(true) {
+            best = Some((modified, p));
+        }
+    }
+    Ok(best.map(|(_, p)| p))
 }

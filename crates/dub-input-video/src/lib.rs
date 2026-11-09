@@ -36,17 +36,35 @@ pub struct VideoInput {
     pub video: PathBuf,
     pub work_dir: PathBuf,
     pub title: String,
+    /// Legenda no idioma original (baixada do YouTube ou informada), se houver.
+    /// Quando existe, substitui a transcrição por áudio — para música e vídeos
+    /// com legenda oficial é muito mais fiel do que o whisper.
+    pub subtitles: Option<PathBuf>,
 }
 
 impl VideoInput {
     /// Aceita caminho local ou URL. URLs são baixadas para `work_dir/source/`.
     pub fn open(source: &str, work_dir: &Path) -> Result<Self> {
+        Self::open_with_subtitles(source, work_dir, None)
+    }
+
+    /// Como [`open`](Self::open); `subtitle_lang` pede ao yt-dlp a legenda do
+    /// vídeo nesse idioma (só para URLs). Sem legenda disponível segue sem ela.
+    pub fn open_with_subtitles(source: &str, work_dir: &Path, subtitle_lang: Option<&str>) -> Result<Self> {
         std::fs::create_dir_all(work_dir)?;
         let ff = Ffmpeg::locate()?;
+        let mut subtitles = None;
         let (video, title) = if YtDlp::is_url(source) {
             let yt = YtDlp::locate()?;
             let title = yt.title(source).unwrap_or_else(|_| "video".into());
             let path = yt.download(source, &work_dir.join("source"))?;
+            if let Some(lang) = subtitle_lang {
+                match yt.download_subtitles(source, lang, &work_dir.join("source")) {
+                    Ok(Some(p)) => subtitles = Some(p),
+                    Ok(None) => info!(lang, "vídeo sem legenda no YouTube; a transcrição será por áudio"),
+                    Err(e) => tracing::warn!("não foi possível baixar a legenda ({e}); a transcrição será por áudio"),
+                }
+            }
             (path, title)
         } else {
             let p = PathBuf::from(source);
@@ -61,7 +79,17 @@ impl VideoInput {
             return Err(DubError::Media("o vídeo não tem faixa de áudio".into()));
         }
         info!(title, duration = info.duration, "vídeo aberto");
-        Ok(Self { ff, video, work_dir: work_dir.to_path_buf(), title })
+        Ok(Self { ff, video, work_dir: work_dir.to_path_buf(), title, subtitles })
+    }
+
+    /// Usa uma legenda local (SRT/VTT no idioma original) no lugar da
+    /// transcrição por áudio. Tem prioridade sobre a baixada do YouTube.
+    pub fn with_subtitles(mut self, path: &Path) -> Result<Self> {
+        if !path.exists() {
+            return Err(DubError::Media(format!("legenda não encontrada: {}", path.display())));
+        }
+        self.subtitles = Some(path.to_path_buf());
+        Ok(self)
     }
 
     /// Troca o diretório de trabalho (útil quando o nome final só é conhecido

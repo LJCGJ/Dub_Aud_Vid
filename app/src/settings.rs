@@ -19,6 +19,13 @@ pub struct Settings {
     pub embed_subtitles: bool,
     pub background_gain: f32,
     pub max_speed: f32,
+    /// auto | speech | music — o que fazer com trechos cantados.
+    #[serde(default)]
+    pub content: dub_core::ContentMode,
+    /// Para URLs do YouTube, usar a legenda do próprio vídeo (quando existir)
+    /// em vez de transcrever o áudio.
+    #[serde(default = "default_true")]
+    pub online_subtitles: bool,
     pub force_cpu: bool,
     /// eco | balanced | max
     pub performance: dub_core::Performance,
@@ -30,6 +37,10 @@ pub struct Settings {
     pub diarize: bool,
     /// Abrir a pasta ao terminar.
     pub open_when_done: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -45,6 +56,8 @@ impl Default for Settings {
             embed_subtitles: true,
             background_gain: 0.9,
             max_speed: 1.35,
+            content: dub_core::ContentMode::Auto,
+            online_subtitles: true,
             force_cpu: false,
             performance: dub_core::Performance::Balanced,
             device_mode: dub_core::DeviceMode::Auto,

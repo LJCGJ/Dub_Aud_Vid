@@ -19,9 +19,10 @@
 //! CPU — é o "processamento em conjunto".
 
 use crate::audio::AudioBuffer;
+use crate::audio::{rms_of, soft_limit_channels};
 use crate::engines::EngineSet;
 use crate::error::{DubError, Result};
-use crate::segment::{Lang, Segment, Speaker};
+use crate::segment::{split_long, Lang, Segment, SegmentKind, Speaker};
 use crate::timing::{plan_all, TimingConfig};
 use crossbeam_channel::{bounded, Sender};
 use serde::{Deserialize, Serialize};
@@ -84,6 +85,47 @@ impl Stretcher for NaiveStretcher {
     }
 }
 
+/// O que fazer com trechos cantados.
+///
+/// Canto dublado por TTS vira um narrador falando por cima da música — nunca
+/// soa bem. Em `Auto`, o pipeline mede, com a voz e o fundo separados, quais
+/// trechos têm música tão alta quanto a voz; esses são tratados como canto:
+/// a voz original fica na mix e a tradução vai só para a legenda. Fala comum
+/// (introdução, diálogo no meio do clipe) continua dublada.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ContentMode {
+    /// Decide por trecho, pela relação música/voz.
+    #[default]
+    Auto,
+    /// Tudo é fala: dubla todos os trechos (comportamento antigo).
+    Speech,
+    /// É música: mantém o canto original e dubla só o que for claramente falado.
+    Music,
+}
+
+impl std::fmt::Display for ContentMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            ContentMode::Auto => "auto",
+            ContentMode::Speech => "speech",
+            ContentMode::Music => "music",
+        })
+    }
+}
+
+impl std::str::FromStr for ContentMode {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "auto" => Ok(ContentMode::Auto),
+            "speech" | "fala" => Ok(ContentMode::Speech),
+            "music" | "musica" | "música" => Ok(ContentMode::Music),
+            other => Err(format!("modo de conteúdo desconhecido: {other} (auto | speech | music)")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineConfig {
     pub source_lang: Option<Lang>,
@@ -108,14 +150,39 @@ pub struct PipelineConfig {
     /// abaixado para este volume só enquanto a voz dublada toca (*ducking*);
     /// música e efeitos fora da fala ficam intactos.
     pub duck_gain: f32,
+    /// Com separação, o instrumental é abaixado para este volume só enquanto a
+    /// voz dublada toca (*sidechain*); fora da fala fica em `background_gain`.
+    /// 1.0 desliga.
+    #[serde(default = "default_music_duck_gain")]
+    pub music_duck_gain: f32,
     /// Volume da voz dublada (0..1).
     pub voice_gain: f32,
     /// Em trechos sobrepostos, reduz a voz dublada por este fator (fica mais
     /// natural do que duas dublagens brigando).
     pub overlap_gain: f32,
+    /// Fala, música ou decidir por trecho.
+    #[serde(default)]
+    pub content: ContentMode,
+    /// Ajustar o volume final para o mesmo nível (RMS) do áudio original, em
+    /// vez de deixar a mix mais baixa que a faixa original do vídeo.
+    #[serde(default = "default_true")]
+    pub match_loudness: bool,
+    /// Trechos mais longos que isto são quebrados antes da tradução/TTS.
+    #[serde(default = "default_max_segment_secs")]
+    pub max_segment_secs: f64,
     pub timing: TimingConfig,
     /// Sample rate da trilha final.
     pub sample_rate: u32,
+}
+
+fn default_music_duck_gain() -> f32 {
+    0.5
+}
+fn default_true() -> bool {
+    true
+}
+fn default_max_segment_secs() -> f64 {
+    8.0
 }
 
 impl Default for PipelineConfig {
@@ -131,8 +198,12 @@ impl Default for PipelineConfig {
             match_voice: true,
             background_gain: 0.9,
             duck_gain: 0.2,
+            music_duck_gain: 0.5,
             voice_gain: 1.0,
             overlap_gain: 0.6,
+            content: ContentMode::Auto,
+            match_loudness: true,
+            max_segment_secs: 8.0,
             timing: TimingConfig::default(),
             sample_rate: 44_100,
         }
@@ -260,6 +331,13 @@ impl Pipeline {
         let mut segments =
             self.engines.transcriber.transcribe_with_progress(&voice_path, self.config.source_lang.as_ref(), on_progress)?;
         segments.retain(|s| !s.source_text.trim().is_empty() && s.end > s.start);
+        // Vale para qualquer transcritor (whisper em Python, legenda pronta…):
+        // blocos de 15–20 s não têm como ser encaixados nem dublados direito.
+        let before_split = segments.len();
+        segments = split_long(segments, self.config.max_segment_secs.max(2.0));
+        if segments.len() != before_split {
+            info!(antes = before_split, depois = segments.len(), "trechos longos quebrados");
+        }
         for (i, s) in segments.iter_mut().enumerate() {
             s.index = i;
         }
@@ -296,6 +374,31 @@ impl Pipeline {
             }
         }
 
+        // 3a'. Fala ou canto? ---------------------------------------------------
+        let sung = match (self.config.content, separated, &background_path) {
+            (ContentMode::Speech, _, _) => 0,
+            (mode, true, Some(bg)) => match (AudioBuffer::read_wav(&voice_path), AudioBuffer::read_wav(bg)) {
+                (Ok(voice), Ok(background)) => classify_singing(&mut segments, &voice, &background, mode),
+                _ => 0,
+            },
+            // Sem separação não dá para medir; em modo música, assume que é
+            // tudo canto (fica legenda + áudio original).
+            (ContentMode::Music, _, _) => {
+                segments.iter_mut().for_each(|s| s.kind = SegmentKind::Singing);
+                segments.len()
+            }
+            _ => 0,
+        };
+        if sung > 0 {
+            info!(cantados = sung, total = segments.len(), "trechos cantados: voz original mantida, tradução só na legenda");
+            report(
+                Stage::Transcribe,
+                100,
+                100,
+                &format!("{sung} de {} trechos são canto (voz original mantida)", segments.len()),
+            );
+        }
+
         // 3b. Gênero da voz original ------------------------------------------
         if self.config.detect_gender {
             match AudioBuffer::read_wav(&voice_path) {
@@ -329,7 +432,9 @@ impl Pipeline {
         report(Stage::Synthesize, total, total, "síntese concluída");
 
         // 5. Time-fit + 6. Mixagem ---------------------------------------------
-        let output = self.fit_and_mix(segments, background_path, ducked, &job.work_dir, &report)?;
+        let original_voice = if separated && segments.iter().any(Segment::is_singing) { Some(voice_path.clone()) } else { None };
+        let reference = job.audio_hq.clone().unwrap_or_else(|| job.audio.clone());
+        let output = self.fit_and_mix(segments, background_path, original_voice, &reference, ducked, &job.work_dir, &report)?;
         report(Stage::Done, 1, 1, "concluído");
         Ok(output)
     }
@@ -398,6 +503,15 @@ impl Pipeline {
                     if cancel_s.load(Ordering::Relaxed) {
                         return Err(DubError::Cancelled);
                     }
+                    // Canto: a tradução fica só na legenda; a voz original volta na mix.
+                    if seg.is_singing() {
+                        done += 1;
+                        if let Some(p) = &progress_s {
+                            let _ = p.send(Progress { stage: Stage::Synthesize, done, total, message: String::new() });
+                        }
+                        tx_done.send(Ok(seg)).map_err(|_| DubError::ChannelClosed("done"))?;
+                        continue;
+                    }
                     let text = seg.target_text.clone().unwrap_or_default();
                     let result = (|| -> Result<Segment> {
                         // Referência de voz: o próprio trecho original do falante.
@@ -462,10 +576,13 @@ impl Pipeline {
         Ok(out)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn fit_and_mix(
         &self,
         mut segments: Vec<Segment>,
         background: Option<PathBuf>,
+        original_voice: Option<PathBuf>,
+        reference: &Path,
         ducked: bool,
         work_dir: &Path,
         report: &dyn Fn(Stage, usize, usize, &str),
@@ -473,15 +590,19 @@ impl Pipeline {
         let sr = self.config.sample_rate;
         let total = segments.len();
 
-        // Carrega as dublagens e mede.
+        // Carrega as dublagens e mede (trechos cantados não têm dublagem).
         report(Stage::Fit, 0, total, "ajustando tempo");
-        let mut dubbed: Vec<AudioBuffer> = Vec::with_capacity(total);
+        let mut dubbed: Vec<Option<AudioBuffer>> = Vec::with_capacity(total);
         for s in &segments {
+            if s.is_singing() {
+                dubbed.push(None);
+                continue;
+            }
             let p = s.dubbed_wav.as_ref().ok_or_else(|| DubError::Audio(format!("segmento {} sem áudio", s.index)))?;
             let a = AudioBuffer::read_wav(p)?;
-            dubbed.push(resample_if_needed(a, sr));
+            dubbed.push(Some(resample_if_needed(a, sr)));
         }
-        let lens: Vec<f64> = dubbed.iter().map(|a| a.duration()).collect();
+        let lens: Vec<f64> = dubbed.iter().map(|a| a.as_ref().map(|a| a.duration()).unwrap_or(0.0)).collect();
         let plans = plan_all(&mut segments, &lens, &self.config.timing);
 
         // Estica e posiciona.
@@ -491,16 +612,44 @@ impl Pipeline {
             .map(|b| b.duration())
             .unwrap_or_else(|| segments.last().map(|s| s.end + 2.0).unwrap_or(0.0));
         let mut voice_track = AudioBuffer::silence(sr, total_len);
+        // Janelas em que a dublagem realmente soa (com o transbordo), para o
+        // ducking seguir a voz e não a marcação do whisper.
+        let mut speech_windows: Vec<(f64, f64)> = Vec::new();
+        let mut sung_windows: Vec<(f64, f64)> = Vec::new();
 
         for (i, (seg, plan)) in segments.iter().zip(&plans).enumerate() {
             self.check_cancel()?;
-            let a =
-                if (plan.speed - 1.0).abs() > 0.01 { self.stretcher.stretch(&dubbed[i], plan.speed)? } else { dubbed[i].clone() };
+            let Some(src) = &dubbed[i] else {
+                sung_windows.push((seg.start, seg.end));
+                info!(
+                    index = seg.index,
+                    inicio = format!("{:.2}", seg.start),
+                    dur = format!("{:.2}", seg.duration()),
+                    "canto: voz original mantida"
+                );
+                report(Stage::Fit, i + 1, total, "");
+                continue;
+            };
+            let a = if (plan.speed - 1.0).abs() > 0.01 { self.stretcher.stretch(src, plan.speed)? } else { src.clone() };
             if plan.overflow > 0.3 {
                 warn!(index = seg.index, overflow = plan.overflow, "dublagem transborda além da janela");
             }
             let gain = if seg.overlapped { self.config.voice_gain * self.config.overlap_gain } else { self.config.voice_gain };
             voice_track.mix_at(&a, seg.start, gain)?;
+            speech_windows.push((seg.start, seg.start + a.duration()));
+            // Um log por trecho: é por aqui que se descobre por que um cue saiu
+            // mudo, corrido ou atrasado.
+            info!(
+                index = seg.index,
+                inicio = format!("{:.2}", seg.start),
+                janela = format!("{:.2}", seg.duration()),
+                tts = format!("{:.2}", src.duration()),
+                final_ = format!("{:.2}", a.duration()),
+                speed = format!("{:.2}", plan.speed),
+                transborda = format!("{:.2}", plan.overflow),
+                chars = seg.target_text.as_deref().map(|t| t.chars().count()).unwrap_or(0),
+                "trecho posicionado"
+            );
             debug!(index = seg.index, speed = plan.speed, "segmento posicionado");
             report(Stage::Fit, i + 1, total, "");
         }
@@ -514,37 +663,65 @@ impl Pipeline {
         // dublada entra no centro, igual em todos os canais.
         report(Stage::Mix, 0, 1, "mixando");
         let mixed_wav = work_dir.join("dub_mix.wav");
-        match &background {
+        // Voz original (isolada) de volta nos trechos cantados.
+        let original_voice_buf = match (&original_voice, sung_windows.is_empty()) {
+            (Some(p), false) => Some(resample_if_needed(AudioBuffer::read_wav(p)?, sr)),
+            _ => None,
+        };
+        let mut out: Vec<Vec<f32>> = match &background {
             Some(bg) => {
                 let (bg_sr, bg_chans) = AudioBuffer::read_wav_channels(bg)?;
-                let windows: Vec<(f64, f64)> = segments.iter().map(|s| (s.start, s.end)).collect();
                 let mut out: Vec<Vec<f32>> = Vec::with_capacity(bg_chans.len().max(1));
                 for ch in bg_chans {
                     let mut bgb = resample_if_needed(AudioBuffer::new(bg_sr, ch), sr);
                     if ducked {
-                        bgb.duck(&windows, self.config.duck_gain, 0.08);
+                        // Sem separação: o original inteiro (com a voz) abaixa bem sob a dublagem.
+                        bgb.duck(&speech_windows, self.config.duck_gain, 0.08);
+                    } else if self.config.music_duck_gain < 0.999 {
+                        // Com separação: o instrumental cede espaço só enquanto a dublagem toca.
+                        bgb.duck(&speech_windows, self.config.music_duck_gain, 0.15);
                     }
                     let mut mixed = voice_track.clone();
                     mixed.mix_at(&bgb, 0.0, self.config.background_gain)?;
+                    if let Some(ov) = &original_voice_buf {
+                        mixed.mix_windows(ov, &sung_windows, 1.0, 0.05)?;
+                    }
                     out.push(mixed.samples);
                 }
-                // Limitador conjunto, para não deslocar a imagem estéreo.
-                let peak = out.iter().flat_map(|c| c.iter()).fold(0.0f32, |m, v| m.max(v.abs()));
-                if peak > 0.95 {
-                    let g = 0.95 / peak;
+                out
+            }
+            None => vec![voice_track.samples.clone()],
+        };
+
+        // Volume final: igual ao do original, em vez de "o que sobrou" depois
+        // de tirar a voz e escalar pelo pico. Um estouro isolado passa pelo
+        // limitador suave sem abaixar o vídeo inteiro.
+        if self.config.match_loudness {
+            if let Ok((ref_sr, ref_chans)) = AudioBuffer::read_wav_channels(reference) {
+                let _ = ref_sr;
+                let ref_rms = ref_chans.iter().map(|c| rms_of(c)).fold(0.0f32, f32::max);
+                let mix_rms = out.iter().map(|c| rms_of(c)).fold(0.0f32, f32::max);
+                if ref_rms > 1e-4 && mix_rms > 1e-4 {
+                    let g = (ref_rms / mix_rms).clamp(0.5, 4.0);
+                    info!(
+                        original_db = format!("{:.1}", db(ref_rms)),
+                        mix_db = format!("{:.1}", db(mix_rms)),
+                        ganho = format!("{g:.2}"),
+                        "volume casado com o original"
+                    );
                     for c in &mut out {
                         for v in c.iter_mut() {
                             *v *= g;
                         }
                     }
                 }
-                AudioBuffer::write_wav_channels(&mixed_wav, sr, &out)?;
             }
-            None => {
-                let mut mixed = voice_track.clone();
-                mixed.limit_peak(0.95);
-                mixed.write_wav(&mixed_wav)?;
-            }
+        }
+        soft_limit_channels(&mut out, 0.8, 0.97);
+        if out.len() == 1 {
+            AudioBuffer::new(sr, std::mem::take(&mut out[0])).write_wav(&mixed_wav)?;
+        } else {
+            AudioBuffer::write_wav_channels(&mixed_wav, sr, &out)?;
         }
 
         let srt = work_dir.join("dub.srt");
@@ -575,6 +752,58 @@ fn estimate_speed(source: &str, target: &str, cfg: &TimingConfig) -> f32 {
     let t = target.chars().count().max(1) as f32;
     let ratio = t / (s * 1.2);
     ratio.clamp(1.0, cfg.max_speed)
+}
+
+fn db(x: f32) -> f32 {
+    20.0 * (x.max(1e-9)).log10()
+}
+
+/// Marca como canto os trechos em que a música (fundo separado) é tão alta
+/// quanto a voz. Devolve quantos foram marcados.
+///
+/// Por trecho mede `fundo_rms / voz_rms`. Em [`ContentMode::Auto`], um trecho
+/// é canto se a relação passa de 0,8 **e** o vídeo como um todo é musical
+/// (pelo menos 40% do tempo falado com música alta) — uma entrevista com
+/// trilha de fundo num trecho só não vira "música". Em [`ContentMode::Music`]
+/// basta a relação passar de 0,35: só fala claramente a seco é dublada.
+pub fn classify_singing(segments: &mut [Segment], voice: &AudioBuffer, background: &AudioBuffer, mode: ContentMode) -> usize {
+    if segments.is_empty() || mode == ContentMode::Speech {
+        return 0;
+    }
+    let ratios: Vec<f32> = segments
+        .iter()
+        .map(|s| {
+            let v = voice.slice_seconds(s.start, s.end).rms();
+            let b = background.slice_seconds(s.start, s.end).rms();
+            if v < 1e-4 {
+                // Voz isolada praticamente muda: não há o que dublar nem manter.
+                return 0.0;
+            }
+            b / v
+        })
+        .collect();
+    let threshold = match mode {
+        ContentMode::Music => 0.35,
+        _ => 0.8,
+    };
+    if mode == ContentMode::Auto {
+        let total: f64 = segments.iter().map(Segment::duration).sum::<f64>().max(1e-3);
+        let musical: f64 = segments.iter().zip(&ratios).filter(|(_, r)| **r > threshold).map(|(s, _)| s.duration()).sum();
+        if musical / total < 0.4 {
+            debug!(fracao = musical / total, "vídeo tratado como fala");
+            return 0;
+        }
+    }
+    let mut n = 0;
+    for (s, r) in segments.iter_mut().zip(&ratios) {
+        if *r > threshold {
+            s.kind = SegmentKind::Singing;
+            n += 1;
+        } else {
+            s.kind = SegmentKind::Speech;
+        }
+    }
+    n
 }
 
 /// Reamostragem linear simples para alinhar sample rate antes da mixagem.
@@ -821,6 +1050,39 @@ mod tests {
     }
 
     #[test]
+    fn singing_detected_where_music_is_loud() {
+        let sr = 16_000u32;
+        let tone = |secs: f64, amp: f32| {
+            AudioBuffer::new(sr, (0..(sr as f64 * secs) as usize).map(|i| ((i as f32) * 0.07).sin() * amp).collect())
+        };
+        // Voz constante; fundo: silêncio nos 2 primeiros segundos (fala a seco), depois alto.
+        let voice = tone(8.0, 0.3);
+        let mut bg = tone(8.0, 0.3);
+        for v in bg.samples.iter_mut().take(sr as usize * 2) {
+            *v = 0.0;
+        }
+        let mut segs = vec![
+            Segment::new(0, 0.0, 2.0, "spoken intro"),
+            Segment::new(1, 2.0, 5.0, "sung line"),
+            Segment::new(2, 5.0, 8.0, "another sung line"),
+        ];
+        let n = classify_singing(&mut segs, &voice, &bg, ContentMode::Auto);
+        assert_eq!(n, 2);
+        assert_eq!(segs[0].kind, SegmentKind::Speech);
+        assert!(segs[1].is_singing() && segs[2].is_singing());
+        // Modo fala: nunca marca.
+        let mut segs2 = segs.clone();
+        assert_eq!(classify_singing(&mut segs2, &voice, &bg, ContentMode::Speech), 0);
+        // Auto com pouco tempo musical: tratado como fala.
+        let mut segs3 = vec![Segment::new(0, 0.0, 6.0, "long talk"), Segment::new(1, 6.0, 7.0, "jingle")];
+        let mut bg3 = tone(8.0, 0.0);
+        for v in bg3.samples.iter_mut().skip(sr as usize * 6) {
+            *v = 0.3;
+        }
+        assert_eq!(classify_singing(&mut segs3, &voice, &bg3, ContentMode::Auto), 0);
+    }
+
+    #[test]
     fn ghosts_are_filtered() {
         assert!(is_ghost(&Segment::new(0, 0.0, 2.0, "E-")));
         assert!(is_ghost(&Segment::new(0, 0.0, 0.1, "hello")));
@@ -875,6 +1137,96 @@ mod tests {
         assert!(mixed.duration() >= 3.0);
         let events: Vec<_> = rx.try_iter().collect();
         assert!(events.iter().any(|e| e.stage == Stage::Done));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Separador falso: a "voz" é o próprio áudio de entrada e o "fundo" é um
+    /// tom alto só depois de 2 s — ou seja, fala a seco e depois música.
+    struct FakeSep;
+    impl Engine for FakeSep {
+        fn info(&self) -> EngineInfo {
+            EngineInfo { name: "fake-sep".into(), model: "-".into(), device: "cpu".into() }
+        }
+    }
+    impl Separator for FakeSep {
+        fn separate(&self, audio: &Path, out_dir: &Path) -> Result<(PathBuf, PathBuf)> {
+            let src = AudioBuffer::read_wav(audio)?;
+            let sr = src.sample_rate;
+            let voice = out_dir.join("voice.wav");
+            let bg = out_dir.join("bg.wav");
+            src.write_wav(&voice)?;
+            let mut b = AudioBuffer::silence(sr, src.duration());
+            for (i, v) in b.samples.iter_mut().enumerate().skip(sr as usize * 2) {
+                *v = ((i as f32) * 0.09).sin() * 0.5;
+            }
+            b.write_wav(&bg)?;
+            Ok((voice, bg))
+        }
+    }
+    struct FakeSung;
+    impl Engine for FakeSung {
+        fn info(&self) -> EngineInfo {
+            Fake.info()
+        }
+    }
+    impl Transcriber for FakeSung {
+        fn transcribe(&self, _: &Path, _: Option<&Lang>) -> Result<Vec<Segment>> {
+            // 0–2 s fala a seco; 2–8 s canto (fundo alto) num bloco longo sem pontuação.
+            Ok(vec![
+                Segment::new(0, 0.2, 1.8, "spoken intro words"),
+                Segment::new(1, 2.0, 8.0, "sung words keep going and going without any punctuation at all here"),
+            ])
+        }
+    }
+
+    #[test]
+    fn music_mode_keeps_original_voice_and_skips_tts() {
+        let dir = std::env::temp_dir().join(format!("dub-music-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("in.wav");
+        let sr = 16000u32;
+        // Voz original: tom constante de 0,3 ao longo de 8 s.
+        AudioBuffer::new(sr, (0..sr as usize * 8).map(|i| ((i as f32) * 0.05).sin() * 0.3).collect()).write_wav(&src).unwrap();
+
+        let run = |match_loudness: bool| {
+            let f = Arc::new(Fake);
+            let engines = EngineSet {
+                transcriber: Arc::new(FakeSung),
+                translator: f.clone(),
+                synthesizer: f.clone(),
+                separator: Some(Arc::new(FakeSep)),
+                diarizer: None,
+            };
+            let cfg = PipelineConfig {
+                sample_rate: sr,
+                align_to_voice: false,
+                max_segment_secs: 3.0,
+                match_loudness,
+                ..Default::default()
+            };
+            Pipeline::new(engines, cfg).run(&DubJob { audio: src.clone(), audio_hq: None, work_dir: dir.clone() }, None).unwrap()
+        };
+        let out = run(false);
+
+        // O bloco de 6 s foi quebrado e tudo depois de 2 s virou canto.
+        assert!(out.segments.len() >= 3, "{:?}", out.segments.len());
+        assert!(!out.segments[0].is_singing());
+        assert!(out.segments[0].dubbed_wav.is_some());
+        assert!(out.segments[1..].iter().all(|s| s.is_singing() && s.dubbed_wav.is_none()));
+        // Tradução existe para a legenda mesmo nos cantados.
+        assert!(out.segments.iter().all(|s| s.target_text.is_some()));
+        // Na mix, os trechos cantados têm a voz original somada ao fundo.
+        let (_, chans) = AudioBuffer::read_wav_channels(&out.mixed_wav).unwrap();
+        let mixed = AudioBuffer::new(sr, chans[0].clone());
+        let sung = mixed.slice_seconds(4.0, 7.0).rms();
+        let bg_only = 0.9 * AudioBuffer::new(sr, (0..sr as usize * 3).map(|i| ((i as f32) * 0.09).sin() * 0.5).collect()).rms();
+        assert!(sung > bg_only * 1.1, "canto {sung} vs fundo {bg_only}");
+
+        // Com o volume casado, a mix fica no nível do original (0,3/√2 ≈ 0,21).
+        let out = run(true);
+        let (_, chans) = AudioBuffer::read_wav_channels(&out.mixed_wav).unwrap();
+        let whole = AudioBuffer::new(sr, chans[0].clone()).rms();
+        assert!((whole - 0.212).abs() < 0.04, "rms {whole}");
         let _ = std::fs::remove_dir_all(dir);
     }
 

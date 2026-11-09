@@ -17,6 +17,7 @@ pub struct Choices {
     pub performance: Performance,
     pub whisper_model: String,
     pub voice: String,
+    pub content: dub_core::ContentMode,
     pub out: Option<PathBuf>,
 }
 
@@ -129,6 +130,14 @@ pub fn run(initial_source: Option<String>) -> Result<Choices> {
     // 5. Voz ----------------------------------------------------------------------
     let voice = pick_voice(&theme)?;
 
+    // 5b. Tipo de conteúdo ----------------------------------------------------------
+    let content_items: Vec<(dub_core::ContentMode, String)> = vec![
+        (dub_core::ContentMode::Auto, "Automático (recomendado) — detecta canto e mantém a voz original nele".into()),
+        (dub_core::ContentMode::Speech, "Fala — dubla todos os trechos (entrevista, aula, gameplay)".into()),
+        (dub_core::ContentMode::Music, "Música — mantém o canto, dubla só a fala; tradução vai na legenda".into()),
+    ];
+    let content = pick(&theme, "Tipo de conteúdo", &content_items, 0)?;
+
     // 6. Saída --------------------------------------------------------------------
     let default_out = default_output_name(&source);
     let out: String = Input::with_theme(&theme).with_prompt("Arquivo de saída (.mp4)").default(default_out).interact_text()?;
@@ -138,12 +147,13 @@ pub fn run(initial_source: Option<String>) -> Result<Choices> {
     eprintln!();
     eprintln!("Comando equivalente (para repetir sem perguntas):");
     eprintln!(
-        "  dub video \"{}\" --device {} --performance {} --whisper-model {} --voice {} -o \"{}\"",
+        "  dub video \"{}\" --device {} --performance {} --whisper-model {} --voice {} --content {} -o \"{}\"",
         source,
         device,
         perf_name(performance),
         whisper_model,
         voice,
+        content,
         out.display()
     );
     eprintln!();
@@ -151,7 +161,7 @@ pub fn run(initial_source: Option<String>) -> Result<Choices> {
         bail!("cancelado");
     }
 
-    Ok(Choices { source, device, performance, whisper_model, voice, out: Some(out) })
+    Ok(Choices { source, device, performance, whisper_model, voice, content, out: Some(out) })
 }
 
 /// Largura útil do terminal para uma linha de opção. O menu redesenha

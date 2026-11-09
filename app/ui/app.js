@@ -289,8 +289,18 @@ function showResult(r) {
   $("#result-summary").textContent = `${r.title} · ${r.segments.length} falas · ${m}m${String(s).padStart(2, "0")}s`;
   $("#result-path").textContent = r.video;
   const warn = $("#result-warn");
+  const notes = [];
+  if (r.sung_segments > 0) {
+    notes.push(`${r.sung_segments} trecho(s) são canto: a voz original foi mantida e a tradução está só na legenda. Para dublar tudo mesmo assim, mude "Tipo de conteúdo" para Fala em Configurações.`);
+  }
+  if (r.transcript_source === "legenda") {
+    notes.push("O texto original veio da legenda do vídeo, não da transcrição por áudio.");
+  }
   if (r.rushed_segments > 0) {
-    warn.textContent = `${r.rushed_segments} fala(s) ficaram aceleradas acima de 1,25× porque a tradução é bem mais longa que o original. Se soar corrido, aumente a "aceleração máxima" em Configurações ou use uma voz mais lenta.`;
+    notes.push(`${r.rushed_segments} fala(s) ficaram aceleradas acima de 1,25× porque a tradução é bem mais longa que o original. Se soar corrido, aumente a "aceleração máxima" em Configurações ou use uma voz mais lenta.`);
+  }
+  if (notes.length) {
+    warn.textContent = notes.join(" ");
     warn.classList.remove("hidden");
   } else warn.classList.add("hidden");
 }
@@ -379,6 +389,8 @@ function fillSettingsForm() {
   $("#s-open-done").checked = settings.open_when_done;
   $("#s-bg").value = settings.background_gain;
   $("#s-speed").value = settings.max_speed;
+  $("#s-content").value = settings.content || "auto";
+  $("#s-online-subs").checked = settings.online_subtitles !== false;
   $("#s-from").value = settings.source_lang ?? "en";
   $("#s-to").value = settings.target_lang;
   $("#s-cpu").checked = settings.force_cpu;
@@ -398,6 +410,8 @@ function readSettingsForm() {
   settings.open_when_done = $("#s-open-done").checked;
   settings.background_gain = Number($("#s-bg").value);
   settings.max_speed = Number($("#s-speed").value);
+  settings.content = $("#s-content").value;
+  settings.online_subtitles = $("#s-online-subs").checked;
   settings.source_lang = $("#s-from").value;
   settings.target_lang = $("#s-to").value;
   settings.force_cpu = $("#s-cpu").checked;
