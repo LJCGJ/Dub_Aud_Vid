@@ -97,6 +97,9 @@ pub struct PipelineConfig {
     /// Estimar se cada voz original é masculina ou feminina (pelo tom), para
     /// engines que escolhem a voz da dublagem por trecho/falante.
     pub detect_gender: bool,
+    /// Com voz isolada, ajustar início/fim de cada trecho ao instante em que a
+    /// voz original realmente soa (o whisper marca com folga, sobretudo em canto).
+    pub align_to_voice: bool,
     /// Volume do fundo original na mixagem final (0..1).
     pub background_gain: f32,
     /// Sem separador de voz/fundo, o áudio original inteiro vira o fundo e é
@@ -122,6 +125,7 @@ impl Default for PipelineConfig {
             separate: true,
             diarize: true,
             detect_gender: true,
+            align_to_voice: true,
             background_gain: 0.9,
             duck_gain: 0.2,
             voice_gain: 1.0,
@@ -270,6 +274,23 @@ impl Pipeline {
 
         if segments.is_empty() {
             return Err(DubError::Audio("nenhuma fala detectada".into()));
+        }
+
+        // 3a. Limpeza e alinhamento pela voz isolada ----------------------------
+        let before = segments.len();
+        segments.retain(|s| !is_ghost(s));
+        if segments.len() != before {
+            info!(removidos = before - segments.len(), "trechos fantasma descartados");
+        }
+        if segments.is_empty() {
+            return Err(DubError::Audio("nenhuma fala detectada".into()));
+        }
+        let separated = background_path.is_some() && self.engines.separator.is_some() && self.config.separate;
+        if separated && self.config.align_to_voice {
+            if let Ok(voice) = AudioBuffer::read_wav(&voice_path) {
+                let moved = snap_to_voice(&mut segments, &voice);
+                info!(ajustados = moved, "início/fim das frases alinhados à voz original");
+            }
         }
 
         // 3b. Gênero da voz original ------------------------------------------
@@ -482,19 +503,42 @@ impl Pipeline {
         voice_track.write_wav(&voice_wav)?;
 
         // Mixagem ----------------------------------------------------------
+        // O fundo mantém os canais originais (estéreo fica estéreo); a voz
+        // dublada entra no centro, igual em todos os canais.
         report(Stage::Mix, 0, 1, "mixando");
-        let mut mixed = voice_track.clone();
-        if let Some(bg) = &background {
-            let mut bg_audio = resample_if_needed(AudioBuffer::read_wav(bg)?, sr);
-            if ducked {
-                let windows: Vec<(f64, f64)> = segments.iter().map(|s| (s.start, s.end)).collect();
-                bg_audio.duck(&windows, self.config.duck_gain, 0.08);
-            }
-            mixed.mix_at(&bg_audio, 0.0, self.config.background_gain)?;
-        }
-        mixed.limit_peak(0.95);
         let mixed_wav = work_dir.join("dub_mix.wav");
-        mixed.write_wav(&mixed_wav)?;
+        match &background {
+            Some(bg) => {
+                let (bg_sr, bg_chans) = AudioBuffer::read_wav_channels(bg)?;
+                let windows: Vec<(f64, f64)> = segments.iter().map(|s| (s.start, s.end)).collect();
+                let mut out: Vec<Vec<f32>> = Vec::with_capacity(bg_chans.len().max(1));
+                for ch in bg_chans {
+                    let mut bgb = resample_if_needed(AudioBuffer::new(bg_sr, ch), sr);
+                    if ducked {
+                        bgb.duck(&windows, self.config.duck_gain, 0.08);
+                    }
+                    let mut mixed = voice_track.clone();
+                    mixed.mix_at(&bgb, 0.0, self.config.background_gain)?;
+                    out.push(mixed.samples);
+                }
+                // Limitador conjunto, para não deslocar a imagem estéreo.
+                let peak = out.iter().flat_map(|c| c.iter()).fold(0.0f32, |m, v| m.max(v.abs()));
+                if peak > 0.95 {
+                    let g = 0.95 / peak;
+                    for c in &mut out {
+                        for v in c.iter_mut() {
+                            *v *= g;
+                        }
+                    }
+                }
+                AudioBuffer::write_wav_channels(&mixed_wav, sr, &out)?;
+            }
+            None => {
+                let mut mixed = voice_track.clone();
+                mixed.limit_peak(0.95);
+                mixed.write_wav(&mixed_wav)?;
+            }
+        }
 
         let srt = work_dir.join("dub.srt");
         std::fs::write(&srt, to_srt(&segments))?;
@@ -527,6 +571,65 @@ fn estimate_speed(source: &str, target: &str, cfg: &TimingConfig) -> f32 {
 }
 
 /// Reamostragem linear simples para alinhar sample rate antes da mixagem.
+/// Trecho "fantasma": o whisper às vezes devolve um "E-" ou um "." de 2 s em
+/// cima de música. Sem letras suficientes ou curto demais, não vira dublagem.
+fn is_ghost(s: &Segment) -> bool {
+    let letters = s.source_text.chars().filter(|c| c.is_alphanumeric()).count();
+    letters < 3 || (s.end - s.start) < 0.25
+}
+
+/// Ajusta `start`/`end` de cada trecho à energia da voz isolada: o início vai
+/// para o primeiro quadro com voz perto da marca do whisper, o fim para o
+/// último. Nunca invade o trecho vizinho. Devolve quantos trechos mudaram.
+pub fn snap_to_voice(segments: &mut [Segment], voice: &AudioBuffer) -> usize {
+    let sr = voice.sample_rate as f64;
+    let frame = 0.02; // 20 ms
+    let n = (frame * sr) as usize;
+    if n == 0 || voice.samples.len() < n * 10 {
+        return 0;
+    }
+    let frames = voice.samples.len() / n;
+    let rms: Vec<f32> = (0..frames)
+        .map(|i| {
+            let x = &voice.samples[i * n..(i + 1) * n];
+            (x.iter().map(|v| v * v).sum::<f32>() / n as f32).sqrt()
+        })
+        .collect();
+    let t_of = |i: usize| i as f64 * frame;
+    let idx_of = |t: f64| ((t / frame).floor().max(0.0) as usize).min(frames.saturating_sub(1));
+    let mut moved = 0;
+    let len = segments.len();
+    for i in 0..len {
+        let (start, end) = (segments[i].start, segments[i].end);
+        let prev_end = if i > 0 { segments[i - 1].end } else { 0.0 };
+        let next_start = segments.get(i + 1).map(|s| s.start).unwrap_or(f64::MAX);
+        // Limiar relativo ao pico de voz na janela do trecho (com folga).
+        let (a, b) = (idx_of((start - 0.6).max(prev_end)), idx_of((end + 0.6).min(next_start)));
+        if b <= a + 2 {
+            continue;
+        }
+        let peak = rms[a..=b].iter().cloned().fold(0.0f32, f32::max);
+        if peak < 0.02 {
+            continue; // sem voz audível: deixa como está
+        }
+        let thr = (peak * 0.15).max(0.012);
+        // Início: primeiro quadro acima do limiar entre (start − 0,6 s) e (start + 1,2 s).
+        let s_hi = idx_of((start + 1.2).min(end));
+        let new_start = (a..=s_hi).find(|&k| rms[k] > thr).map(t_of).unwrap_or(start);
+        // Fim: último quadro acima do limiar entre (end − 1,5 s) e (end + 0,6 s).
+        let e_lo = idx_of((end - 1.5).max(new_start + 0.3));
+        let new_end = (e_lo..=b).rev().find(|&k| rms[k] > thr).map(|k| t_of(k + 1)).unwrap_or(end);
+        let new_start = new_start.max(prev_end);
+        let new_end = new_end.min(next_start).max(new_start + 0.3);
+        if (new_start - start).abs() > 0.05 || (new_end - end).abs() > 0.05 {
+            moved += 1;
+        }
+        segments[i].start = new_start;
+        segments[i].end = new_end;
+    }
+    moved
+}
+
 /// Estima o gênero de cada segmento pelo f0 do trecho na voz isolada. Com
 /// diarização, cada falante recebe o voto majoritário (ponderado pela
 /// duração) dos seus trechos, para a voz não trocar no meio de uma fala.
@@ -604,6 +707,31 @@ fn srt_with<'a>(segments: &'a [Segment], text: impl Fn(&'a Segment) -> &'a str) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snap_moves_segment_to_voice_energy() {
+        // Voz (ruído) só entre 1,0 s e 2,0 s; whisper marcou 0,5–2,8.
+        let sr = 16_000u32;
+        let mut samples = vec![0.0f32; sr as usize * 4];
+        let mut seed = 7u32;
+        for v in samples.iter_mut().take(sr as usize * 2).skip(sr as usize) {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *v = ((seed >> 9) as f32 / (1u32 << 23) as f32 - 1.0) * 0.3;
+        }
+        let voice = AudioBuffer::new(sr, samples);
+        let mut segs = vec![Segment::new(0, 0.5, 2.8, "hello world")];
+        let moved = snap_to_voice(&mut segs, &voice);
+        assert_eq!(moved, 1);
+        assert!((segs[0].start - 1.0).abs() < 0.06, "start {}", segs[0].start);
+        assert!((segs[0].end - 2.0).abs() < 0.06, "end {}", segs[0].end);
+    }
+
+    #[test]
+    fn ghosts_are_filtered() {
+        assert!(is_ghost(&Segment::new(0, 0.0, 2.0, "E-")));
+        assert!(is_ghost(&Segment::new(0, 0.0, 0.1, "hello")));
+        assert!(!is_ghost(&Segment::new(0, 0.0, 1.0, "hello")));
+    }
     use crate::engines::*;
 
     struct Fake;
