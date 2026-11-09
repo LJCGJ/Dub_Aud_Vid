@@ -381,6 +381,81 @@ impl AudioBuffer {
         Ok(())
     }
 
+    /// Filtro passa-altas (biquad Butterworth de 2ª ordem): tira o grave
+    /// "embolado" da voz sintetizada, que briga com o baixo da música.
+    pub fn highpass(&mut self, cutoff_hz: f32) {
+        let sr = self.sample_rate as f32;
+        if cutoff_hz <= 0.0 || cutoff_hz >= sr * 0.45 {
+            return;
+        }
+        let w0 = 2.0 * std::f32::consts::PI * cutoff_hz / sr;
+        let (sin, cos) = w0.sin_cos();
+        // Butterworth: Q = 1/√2.
+        let alpha = sin / (2.0 * std::f32::consts::FRAC_1_SQRT_2);
+        let b0 = (1.0 + cos) / 2.0;
+        let b1 = -(1.0 + cos);
+        let b2 = (1.0 + cos) / 2.0;
+        let a0 = 1.0 + alpha;
+        let a1 = -2.0 * cos;
+        let a2 = 1.0 - alpha;
+        biquad(&mut self.samples, [b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0]);
+    }
+
+    /// Equalizador paramétrico (pico) em `freq_hz`, largura `q`, ganho em dB.
+    /// +3 dB perto de 3 kHz dá "presença": a voz recorta a música sem precisar
+    /// de muito mais volume.
+    pub fn peaking_eq(&mut self, freq_hz: f32, q: f32, gain_db: f32) {
+        let sr = self.sample_rate as f32;
+        if gain_db.abs() < 0.01 || freq_hz <= 0.0 || freq_hz >= sr * 0.45 || q <= 0.0 {
+            return;
+        }
+        let a = 10f32.powf(gain_db / 40.0);
+        let w0 = 2.0 * std::f32::consts::PI * freq_hz / sr;
+        let (sin, cos) = w0.sin_cos();
+        let alpha = sin / (2.0 * q);
+        let b0 = 1.0 + alpha * a;
+        let b1 = -2.0 * cos;
+        let b2 = 1.0 - alpha * a;
+        let a0 = 1.0 + alpha / a;
+        let a1 = -2.0 * cos;
+        let a2 = 1.0 - alpha / a;
+        biquad(&mut self.samples, [b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0]);
+    }
+
+    /// Compressor (detector de pico com ataque/relaxamento): acima de
+    /// `threshold_db`, o excesso é dividido por `ratio`. Deixa o volume da fala
+    /// estável, para ela não sumir nas sílabas fracas nem estourar nas fortes.
+    /// Ganho de compensação não incluído (o nível final é ajustado depois).
+    pub fn compress(&mut self, threshold_db: f32, ratio: f32, attack_ms: f32, release_ms: f32) {
+        let sr = self.sample_rate as f32;
+        if ratio <= 1.0 || self.samples.is_empty() {
+            return;
+        }
+        let att = (-1.0 / (attack_ms.max(0.1) * 0.001 * sr)).exp();
+        let rel = (-1.0 / (release_ms.max(1.0) * 0.001 * sr)).exp();
+        let mut env_db = -120.0f32;
+        for s in self.samples.iter_mut() {
+            let lvl = 20.0 * s.abs().max(1e-6).log10();
+            let coef = if lvl > env_db { att } else { rel };
+            env_db = coef * env_db + (1.0 - coef) * lvl;
+            let over = env_db - threshold_db;
+            if over > 0.0 {
+                let reduction_db = over - over / ratio;
+                *s *= 10f32.powf(-reduction_db / 20.0);
+            }
+        }
+    }
+
+    /// Multiplica todas as amostras por `gain`.
+    pub fn scale(&mut self, gain: f32) {
+        self.samples.iter_mut().for_each(|s| *s *= gain);
+    }
+
+    /// RMS só dentro das janelas `(início, fim)` em segundos (0 se vazias).
+    pub fn rms_in_windows(&self, windows: &[(f64, f64)]) -> f32 {
+        rms_in_windows(&self.samples, self.sample_rate, windows)
+    }
+
     /// Normaliza o pico para `peak` (ex.: 0.95) se estiver acima.
     pub fn limit_peak(&mut self, peak: f32) {
         let max = self.samples.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
@@ -388,6 +463,39 @@ impl AudioBuffer {
             let g = peak / max;
             self.samples.iter_mut().for_each(|s| *s *= g);
         }
+    }
+}
+
+/// Biquad em forma direta I. `c = [b0, b1, b2, a1, a2]` já normalizados por a0.
+fn biquad(samples: &mut [f32], c: [f32; 5]) {
+    let (mut x1, mut x2, mut y1, mut y2) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+    for s in samples.iter_mut() {
+        let x0 = *s;
+        let y0 = c[0] * x0 + c[1] * x1 + c[2] * x2 - c[3] * y1 - c[4] * y2;
+        x2 = x1;
+        x1 = x0;
+        y2 = y1;
+        y1 = y0;
+        *s = y0;
+    }
+}
+
+/// RMS de `samples` só dentro das janelas `(início, fim)` em segundos.
+pub fn rms_in_windows(samples: &[f32], sample_rate: u32, windows: &[(f64, f64)]) -> f32 {
+    let sr = sample_rate as f64;
+    let (mut sum, mut n) = (0.0f64, 0usize);
+    for &(a, b) in windows {
+        let i0 = ((a.max(0.0) * sr) as usize).min(samples.len());
+        let i1 = ((b.max(a) * sr) as usize).min(samples.len());
+        for v in &samples[i0..i1] {
+            sum += (*v as f64) * (*v as f64);
+        }
+        n += i1 - i0;
+    }
+    if n == 0 {
+        0.0
+    } else {
+        (sum / n as f64).sqrt() as f32
     }
 }
 
@@ -433,6 +541,50 @@ mod tests {
         assert_eq!(ch[0][3], 0.1);
         assert!(ch[0][1] > 0.8 && ch[0][1] < 0.95);
         assert!(ch[0][2] < -0.8 && ch[0][2] > -0.95);
+    }
+
+    fn sine(sr: u32, hz: f32, secs: f32, amp: f32) -> AudioBuffer {
+        let n = (sr as f32 * secs) as usize;
+        AudioBuffer::new(sr, (0..n).map(|i| amp * (2.0 * std::f32::consts::PI * hz * i as f32 / sr as f32).sin()).collect())
+    }
+
+    #[test]
+    fn highpass_cuts_low_keeps_high() {
+        let mut low = sine(44_100, 40.0, 1.0, 0.5);
+        low.highpass(110.0);
+        let mut high = sine(44_100, 2000.0, 1.0, 0.5);
+        high.highpass(110.0);
+        let tail = |a: &AudioBuffer| rms_of(&a.samples[a.samples.len() / 2..]);
+        assert!(tail(&low) < 0.5 * 0.707 * 0.2, "40 Hz deveria cair bastante: {}", tail(&low));
+        assert!((tail(&high) - 0.5 * 0.707).abs() < 0.02, "2 kHz deveria passar: {}", tail(&high));
+    }
+
+    #[test]
+    fn peaking_eq_boosts_center() {
+        let mut a = sine(44_100, 3000.0, 1.0, 0.1);
+        a.peaking_eq(3000.0, 1.0, 6.0);
+        let r = rms_of(&a.samples[22_050..]) / (0.1 * 0.707);
+        assert!((r - 2.0).abs() < 0.1, "+6 dB ≈ x2: {r}");
+    }
+
+    #[test]
+    fn compressor_reduces_loud_keeps_quiet() {
+        let mut loud = sine(44_100, 500.0, 1.0, 0.9);
+        loud.compress(-24.0, 3.0, 5.0, 120.0);
+        let mut quiet = sine(44_100, 500.0, 1.0, 0.02);
+        quiet.compress(-24.0, 3.0, 5.0, 120.0);
+        assert!(rms_of(&loud.samples[22_050..]) < 0.9 * 0.707 * 0.4);
+        assert!((rms_of(&quiet.samples[22_050..]) - 0.02 * 0.707).abs() < 0.002);
+    }
+
+    #[test]
+    fn rms_in_windows_measures_only_windows() {
+        let mut a = AudioBuffer::silence(100, 4.0);
+        for v in &mut a.samples[100..200] {
+            *v = 0.5;
+        }
+        assert!((a.rms_in_windows(&[(1.0, 2.0)]) - 0.5).abs() < 1e-6);
+        assert_eq!(a.rms_in_windows(&[(2.5, 3.5)]), 0.0);
     }
 
     #[test]

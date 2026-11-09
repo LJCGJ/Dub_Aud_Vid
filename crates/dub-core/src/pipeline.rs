@@ -22,7 +22,7 @@ use crate::audio::AudioBuffer;
 use crate::audio::{rms_of, soft_limit_channels};
 use crate::engines::EngineSet;
 use crate::error::{DubError, Result};
-use crate::segment::{split_long, Lang, Segment, SegmentKind, Speaker};
+use crate::segment::{clean_caption_text, merge_fragments, split_long, Lang, Segment, SegmentKind, Speaker};
 use crate::timing::{plan_all, TimingConfig};
 use crossbeam_channel::{bounded, Sender};
 use serde::{Deserialize, Serialize};
@@ -157,6 +157,15 @@ pub struct PipelineConfig {
     pub music_duck_gain: f32,
     /// Volume da voz dublada (0..1).
     pub voice_gain: f32,
+    /// Quantos dB a voz dublada fica **acima** do fundo (música/efeitos) nos
+    /// trechos em que ela toca. Fala sobre música só é entendida com uns 6 dB
+    /// de folga; com 0 ou menos, a dublagem "some" dentro da música.
+    #[serde(default = "default_voice_over_music_db")]
+    pub voice_over_music_db: f32,
+    /// Tratar a voz dublada antes da mixagem: passa-altas em 110 Hz, presença
+    /// (+3 dB em 3 kHz) e compressor — voz clara e estável sobre a música.
+    #[serde(default = "default_true")]
+    pub voice_polish: bool,
     /// Em trechos sobrepostos, reduz a voz dublada por este fator (fica mais
     /// natural do que duas dublagens brigando).
     pub overlap_gain: f32,
@@ -177,6 +186,9 @@ pub struct PipelineConfig {
 
 fn default_music_duck_gain() -> f32 {
     0.5
+}
+fn default_voice_over_music_db() -> f32 {
+    6.0
 }
 fn default_true() -> bool {
     true
@@ -200,6 +212,8 @@ impl Default for PipelineConfig {
             duck_gain: 0.2,
             music_duck_gain: 0.5,
             voice_gain: 1.0,
+            voice_over_music_db: default_voice_over_music_db(),
+            voice_polish: true,
             overlap_gain: 0.6,
             content: ContentMode::Auto,
             match_loudness: true,
@@ -330,7 +344,18 @@ impl Pipeline {
         };
         let mut segments =
             self.engines.transcriber.transcribe_with_progress(&voice_path, self.config.source_lang.as_ref(), on_progress)?;
+        // Marcações de legenda ([Music], >>, ♪…) não são fala: fora antes de
+        // traduzir, senão o TTS lê "música" em voz alta.
+        for s in segments.iter_mut() {
+            s.source_text = clean_caption_text(&s.source_text);
+        }
         segments.retain(|s| !s.source_text.trim().is_empty() && s.end > s.start);
+        // Frases cortadas no meio pela legenda viram uma só antes da tradução.
+        let before_merge = segments.len();
+        segments = merge_fragments(segments, self.config.max_segment_secs.max(2.0));
+        if segments.len() != before_merge {
+            info!(antes = before_merge, depois = segments.len(), "pedaços de frase juntados");
+        }
         // Vale para qualquer transcritor (whisper em Python, legenda pronta…):
         // blocos de 15–20 s não têm como ser encaixados nem dublados direito.
         let before_split = segments.len();
@@ -479,7 +504,7 @@ impl Pipeline {
                 }
                 let mut out = chunk.to_vec();
                 for (s, t) in out.iter_mut().zip(translated) {
-                    s.target_text = Some(t);
+                    s.target_text = Some(clean_caption_text(&t));
                 }
                 done += out.len();
                 if let Some(p) = &progress_t {
@@ -654,9 +679,22 @@ impl Pipeline {
             report(Stage::Fit, i + 1, total, "");
         }
 
+        // Tratamento da voz: tira o grave que embola com o baixo da música,
+        // realça a presença (3 kHz) e estabiliza o volume com um compressor.
+        if self.config.voice_polish && !speech_windows.is_empty() {
+            voice_track.highpass(110.0);
+            voice_track.peaking_eq(3000.0, 1.0, 3.0);
+            voice_track.compress(-24.0, 3.0, 5.0, 120.0);
+        }
+
         let voice_wav = work_dir.join("voice_dubbed.wav");
-        voice_track.limit_peak(0.95);
-        voice_track.write_wav(&voice_wav)?;
+        {
+            // Só a voz, para conferência/edição: pico normalizado num cópia, para
+            // não mexer no nível relativo usado na mixagem.
+            let mut v = voice_track.clone();
+            v.limit_peak(0.95);
+            v.write_wav(&voice_wav)?;
+        }
 
         // Mixagem ----------------------------------------------------------
         // O fundo mantém os canais originais (estéreo fica estéreo); a voz
@@ -668,29 +706,61 @@ impl Pipeline {
             (Some(p), false) => Some(resample_if_needed(AudioBuffer::read_wav(p)?, sr)),
             _ => None,
         };
-        let mut out: Vec<Vec<f32>> = match &background {
+        // Fundo já com ducking e ganho, por canal.
+        let backgrounds: Vec<AudioBuffer> = match &background {
             Some(bg) => {
                 let (bg_sr, bg_chans) = AudioBuffer::read_wav_channels(bg)?;
-                let mut out: Vec<Vec<f32>> = Vec::with_capacity(bg_chans.len().max(1));
-                for ch in bg_chans {
-                    let mut bgb = resample_if_needed(AudioBuffer::new(bg_sr, ch), sr);
-                    if ducked {
-                        // Sem separação: o original inteiro (com a voz) abaixa bem sob a dublagem.
-                        bgb.duck(&speech_windows, self.config.duck_gain, 0.08);
-                    } else if self.config.music_duck_gain < 0.999 {
-                        // Com separação: o instrumental cede espaço só enquanto a dublagem toca.
-                        bgb.duck(&speech_windows, self.config.music_duck_gain, 0.15);
-                    }
-                    let mut mixed = voice_track.clone();
-                    mixed.mix_at(&bgb, 0.0, self.config.background_gain)?;
-                    if let Some(ov) = &original_voice_buf {
-                        mixed.mix_windows(ov, &sung_windows, 1.0, 0.05)?;
-                    }
-                    out.push(mixed.samples);
-                }
-                out
+                bg_chans
+                    .into_iter()
+                    .map(|ch| {
+                        let mut bgb = resample_if_needed(AudioBuffer::new(bg_sr, ch), sr);
+                        if ducked {
+                            // Sem separação: o original inteiro (com a voz) abaixa bem sob a dublagem.
+                            bgb.duck(&speech_windows, self.config.duck_gain, 0.08);
+                        } else if self.config.music_duck_gain < 0.999 {
+                            // Com separação: o instrumental cede espaço só enquanto a dublagem toca.
+                            bgb.duck(&speech_windows, self.config.music_duck_gain, 0.15);
+                        }
+                        bgb.scale(self.config.background_gain);
+                        bgb
+                    })
+                    .collect()
             }
-            None => vec![voice_track.samples.clone()],
+            None => Vec::new(),
+        };
+
+        // Voz × música: a voz dublada precisa ficar `voice_over_music_db` acima
+        // do fundo enquanto toca, senão "some" dentro da música.
+        let voice_rms = voice_track.rms_in_windows(&speech_windows);
+        let bg_rms = backgrounds.iter().map(|b| b.rms_in_windows(&speech_windows)).fold(0.0f32, f32::max);
+        if voice_rms > 1e-4 && bg_rms > 1e-4 {
+            let before = db(voice_rms) - db(bg_rms);
+            let target = self.config.voice_over_music_db;
+            let g = (10f32.powf((target - before) / 20.0)).clamp(0.25, 8.0);
+            voice_track.scale(g);
+            let after = before + db(g);
+            info!(
+                antes_db = format!("{before:+.1}"),
+                depois_db = format!("{after:+.1}"),
+                alvo_db = format!("{target:+.1}"),
+                "voz × fundo nos trechos dublados"
+            );
+            report(Stage::Mix, 0, 1, &format!("voz {after:+.1} dB acima do fundo (era {before:+.1} dB)"));
+        }
+
+        let mut out: Vec<Vec<f32>> = if backgrounds.is_empty() {
+            vec![voice_track.samples.clone()]
+        } else {
+            let mut out: Vec<Vec<f32>> = Vec::with_capacity(backgrounds.len());
+            for bgb in &backgrounds {
+                let mut mixed = voice_track.clone();
+                mixed.mix_at(bgb, 0.0, 1.0)?;
+                if let Some(ov) = &original_voice_buf {
+                    mixed.mix_windows(ov, &sung_windows, 1.0, 0.05)?;
+                }
+                out.push(mixed.samples);
+            }
+            out
         };
 
         // Volume final: igual ao do original, em vez de "o que sobrou" depois
@@ -717,7 +787,8 @@ impl Pipeline {
                 }
             }
         }
-        soft_limit_channels(&mut out, 0.8, 0.97);
+        // Teto em −1 dBFS (0,89): sem estouro nem distorção ao converter para AAC.
+        soft_limit_channels(&mut out, 0.75, 0.89);
         if out.len() == 1 {
             AudioBuffer::new(sr, std::mem::take(&mut out[0])).write_wav(&mixed_wav)?;
         } else {
@@ -1098,12 +1169,12 @@ mod tests {
     }
     impl Transcriber for Fake {
         fn transcribe(&self, _: &Path, _: Option<&Lang>) -> Result<Vec<Segment>> {
-            Ok(vec![Segment::new(0, 0.5, 1.5, "hello world"), Segment::new(1, 2.0, 3.0, "second line")])
+            Ok(vec![Segment::new(0, 0.5, 1.5, "Hello world."), Segment::new(1, 2.0, 3.0, "Second line.")])
         }
     }
     impl Translator for Fake {
         fn translate(&self, texts: &[&str], _: &Lang, _: &Lang) -> Result<Vec<String>> {
-            Ok(texts.iter().map(|t| format!("PT[{t}]")).collect())
+            Ok(texts.iter().map(|t| format!("PT: {t}")).collect())
         }
     }
     impl Synthesizer for Fake {
@@ -1131,7 +1202,7 @@ mod tests {
             Pipeline::new(engines, cfg).run(&DubJob { audio: src, audio_hq: None, work_dir: dir.clone() }, Some(tx)).unwrap();
 
         assert_eq!(out.segments.len(), 2);
-        assert_eq!(out.segments[0].target_text.as_deref(), Some("PT[hello world]"));
+        assert_eq!(out.segments[0].target_text.as_deref(), Some("PT: Hello world."));
         assert!(out.mixed_wav.exists() && out.srt.exists());
         let mixed = AudioBuffer::read_wav(&out.mixed_wav).unwrap();
         assert!(mixed.duration() >= 3.0);
@@ -1177,6 +1248,62 @@ mod tests {
                 Segment::new(1, 2.0, 8.0, "sung words keep going and going without any punctuation at all here"),
             ])
         }
+    }
+
+    /// Separador falso com música alta o tempo todo.
+    struct LoudSep;
+    impl Engine for LoudSep {
+        fn info(&self) -> EngineInfo {
+            EngineInfo { name: "loud-sep".into(), model: "-".into(), device: "cpu".into() }
+        }
+    }
+    impl Separator for LoudSep {
+        fn separate(&self, audio: &Path, out_dir: &Path) -> Result<(PathBuf, PathBuf)> {
+            let src = AudioBuffer::read_wav(audio)?;
+            let sr = src.sample_rate;
+            let voice = out_dir.join("voice.wav");
+            let bg = out_dir.join("bg.wav");
+            src.write_wav(&voice)?;
+            let n = src.samples.len();
+            AudioBuffer::new(sr, (0..n).map(|i| ((i as f32) * 0.011).sin() * 0.6).collect()).write_wav(&bg)?;
+            Ok((voice, bg))
+        }
+    }
+
+    #[test]
+    fn dubbed_voice_sits_above_loud_music() {
+        let dir = std::env::temp_dir().join(format!("dub-level-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("in.wav");
+        let sr = 16000u32;
+        AudioBuffer::new(sr, (0..sr as usize * 4).map(|i| ((i as f32) * 0.05).sin() * 0.3).collect()).write_wav(&src).unwrap();
+        let f = Arc::new(Fake);
+        let engines = EngineSet {
+            transcriber: f.clone(),
+            translator: f.clone(),
+            synthesizer: f.clone(),
+            separator: Some(Arc::new(LoudSep)),
+            diarizer: None,
+        };
+        let cfg = PipelineConfig {
+            sample_rate: sr,
+            align_to_voice: false,
+            content: ContentMode::Speech,
+            match_loudness: false,
+            ..Default::default()
+        };
+        let out = Pipeline::new(engines, cfg).run(&DubJob { audio: src, audio_hq: None, work_dir: dir.clone() }, None).unwrap();
+        // Mede no próprio resultado: voz (trilha dublada escalada) vs fundo.
+        let (_, chans) = AudioBuffer::read_wav_channels(&out.mixed_wav).unwrap();
+        let mixed = AudioBuffer::new(sr, chans[0].clone());
+        let win = [(out.segments[0].start + 0.1, out.segments[0].start + 0.6)];
+        let total = mixed.rms_in_windows(&win);
+        // Fundo nesse trecho: 0,6 de seno, abaixado pelo ducking (0,5) e pelo ganho (0,9).
+        let bg = 0.6 * 0.707 * 0.5 * 0.9;
+        let voice = (total * total - bg * bg).max(0.0).sqrt();
+        let diff = db(voice) - db(bg);
+        assert!(diff > 4.0, "voz deveria ficar ~6 dB acima do fundo, ficou {diff:.1} dB");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

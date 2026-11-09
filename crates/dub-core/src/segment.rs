@@ -179,6 +179,122 @@ pub fn split_long(segs: Vec<Segment>, max_secs: f64) -> Vec<Segment> {
     out
 }
 
+/// Limpa marcações de legenda que não são fala: `[Music]`, `[música]`,
+/// `[Applause]`, `(risos)`, `♪`, o `>>` de troca de falante das legendas
+/// automáticas do YouTube e hífens/pontos soltos. Sem isto o TTS lê "música"
+/// e "gritando" em voz alta no meio das frases.
+pub fn clean_caption_text(text: &str) -> String {
+    // Palavras que, entre parênteses, indicam som e não fala.
+    const SOUND_WORDS: &[&str] = &[
+        "music",
+        "música",
+        "musica",
+        "applause",
+        "aplausos",
+        "laughter",
+        "laughs",
+        "laughing",
+        "risos",
+        "risadas",
+        "cheering",
+        "cheers",
+        "screaming",
+        "screams",
+        "gritando",
+        "gritos",
+        "grito",
+        "inaudible",
+        "inaudível",
+        "silence",
+        "silêncio",
+        "sighs",
+        "suspira",
+        "noise",
+        "ruído",
+        "barulho",
+        "instrumental",
+        "singing",
+        "cantando",
+    ];
+    let mut out = String::with_capacity(text.len());
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            '[' => {
+                // Tudo entre colchetes é marcação de legenda.
+                match chars[i..].iter().position(|&x| x == ']') {
+                    Some(off) => {
+                        i += off + 1;
+                        out.push(' ');
+                        continue;
+                    }
+                    None => {
+                        i += 1;
+                        continue;
+                    }
+                }
+            }
+            '(' => {
+                if let Some(off) = chars[i..].iter().position(|&x| x == ')') {
+                    let inner: String = chars[i + 1..i + off].iter().collect();
+                    let inner_l = inner.trim().to_lowercase();
+                    if SOUND_WORDS.iter().any(|w| inner_l == *w || inner_l.starts_with(&format!("{w} "))) {
+                        i += off + 1;
+                        out.push(' ');
+                        continue;
+                    }
+                }
+                out.push(c);
+            }
+            '♪' | '♫' | '♬' | '♩' => out.push(' '),
+            _ => out.push(c),
+        }
+        i += 1;
+    }
+    let words: Vec<&str> =
+        out.split_whitespace().filter(|w| !w.chars().all(|c| matches!(c, '>' | '-' | '–' | '—' | '.' | '…'))).collect();
+    let joined = words.join(" ");
+    // Pontuação órfã no começo (", e então" / ". Paciência").
+    joined.trim_start_matches(|c: char| matches!(c, ',' | '.' | ';' | ':' | '-' | '–' | '—') || c.is_whitespace()).to_string()
+}
+
+/// `true` se o texto termina uma frase (`. ! ? …`, inclusive antes de aspas).
+fn ends_sentence(text: &str) -> bool {
+    let t = text.trim_end_matches(|c: char| matches!(c, '"' | '\'' | '”' | '’' | ')' | '»') || c.is_whitespace());
+    matches!(t.chars().last(), Some('.' | '!' | '?' | '…'))
+}
+
+/// Junta pedaços de frase que a legenda cortou no meio ("ainda aprende a" /
+/// "sobreviver."), para a tradução receber a frase inteira. Só junta trechos
+/// colados no tempo (até 0,8 s de pausa), do mesmo falante e tipo, enquanto o
+/// total couber em `max_secs`. Traduzir pedaços soltos gera erros como
+/// "Viking no escuro" e palavras inglesas sobrando no fim da linha.
+pub fn merge_fragments(segs: Vec<Segment>, max_secs: f64) -> Vec<Segment> {
+    let mut out: Vec<Segment> = Vec::with_capacity(segs.len());
+    for s in segs {
+        if let Some(last) = out.last_mut() {
+            let gap = s.start - last.end;
+            let same_speaker = last.speaker == s.speaker && last.kind == s.kind;
+            let fits = s.end - last.start <= max_secs;
+            let continues =
+                !ends_sentence(&last.source_text) || s.source_text.chars().next().map(|c| c.is_lowercase()).unwrap_or(false);
+            if continues && same_speaker && fits && (-0.05..=0.8).contains(&gap) {
+                last.source_text = format!("{} {}", last.source_text.trim_end(), s.source_text.trim_start());
+                last.end = last.end.max(s.end);
+                last.overlapped |= s.overlapped;
+                continue;
+            }
+        }
+        out.push(s);
+    }
+    for (i, s) in out.iter_mut().enumerate() {
+        s.index = i;
+    }
+    out
+}
+
 fn split_text(text: &str, duration: f64, max_secs: f64) -> Vec<String> {
     // Folga de 20%: as palavras não se repartem em pedaços exatamente iguais.
     let pieces_needed = (duration / (max_secs * 0.8)).ceil().max(2.0) as usize;
@@ -259,6 +375,43 @@ mod tests {
     #[test]
     fn split_long_keeps_short_segments() {
         let out = split_long(vec![Segment::new(0, 0.0, 5.0, "short one"), Segment::new(1, 5.0, 7.0, "and two")], 8.0);
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn clean_caption_removes_sound_tags_and_markers() {
+        assert_eq!(clean_caption_text(">> >> If you take my walls down,"), "If you take my walls down,");
+        assert_eq!(clean_caption_text("I don't need [Music] to win."), "I don't need to win.");
+        assert_eq!(clean_caption_text("survive. [screaming]"), "survive.");
+        assert_eq!(clean_caption_text("♪ hold on ♪ (laughs) ok"), "hold on ok");
+        assert_eq!(clean_caption_text("-. Patience, caught it soon"), "Patience, caught it soon");
+        // Parênteses com fala de verdade ficam.
+        assert_eq!(clean_caption_text("he said (quietly) no"), "he said (quietly) no");
+        assert_eq!(clean_caption_text("[Music]"), "");
+    }
+
+    #[test]
+    fn merge_fragments_joins_cut_sentences() {
+        let segs = vec![
+            Segment::new(0, 26.6, 30.0, "Walking in the dark, still learning to"),
+            Segment::new(1, 30.0, 32.0, "survive."),
+            Segment::new(2, 32.2, 35.0, "Next line starts here."),
+        ];
+        let out = merge_fragments(segs, 8.0);
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert_eq!(out[0].source_text, "Walking in the dark, still learning to survive.");
+        assert_eq!(out[0].start, 26.6);
+        assert_eq!(out[0].end, 32.0);
+        assert_eq!(out[1].index, 1);
+    }
+
+    #[test]
+    fn merge_fragments_respects_gaps_and_max() {
+        // Pausa longa: não junta.
+        let out = merge_fragments(vec![Segment::new(0, 0.0, 2.0, "and then"), Segment::new(1, 4.0, 6.0, "we left.")], 8.0);
+        assert_eq!(out.len(), 2);
+        // Passaria do máximo: não junta.
+        let out = merge_fragments(vec![Segment::new(0, 0.0, 6.0, "a long line"), Segment::new(1, 6.0, 10.0, "goes on")], 8.0);
         assert_eq!(out.len(), 2);
     }
 }
