@@ -268,7 +268,7 @@ fn ends_sentence(text: &str) -> bool {
 
 /// Junta pedaços de frase que a legenda cortou no meio ("ainda aprende a" /
 /// "sobreviver."), para a tradução receber a frase inteira. Só junta trechos
-/// colados no tempo (até 0,8 s de pausa), do mesmo falante e tipo, enquanto o
+/// colados no tempo (até 0,5 s de pausa; pausas maiores são da fala e ficam), do mesmo falante e tipo, enquanto o
 /// total couber em `max_secs`. Traduzir pedaços soltos gera erros como
 /// "Viking no escuro" e palavras inglesas sobrando no fim da linha.
 pub fn merge_fragments(segs: Vec<Segment>, max_secs: f64) -> Vec<Segment> {
@@ -280,7 +280,7 @@ pub fn merge_fragments(segs: Vec<Segment>, max_secs: f64) -> Vec<Segment> {
             let fits = s.end - last.start <= max_secs;
             let continues =
                 !ends_sentence(&last.source_text) || s.source_text.chars().next().map(|c| c.is_lowercase()).unwrap_or(false);
-            if continues && same_speaker && fits && (-0.05..=0.8).contains(&gap) {
+            if continues && same_speaker && fits && (-0.05..=0.5).contains(&gap) {
                 last.source_text = format!("{} {}", last.source_text.trim_end(), s.source_text.trim_start());
                 last.end = last.end.max(s.end);
                 last.overlapped |= s.overlapped;

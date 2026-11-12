@@ -176,6 +176,11 @@ pub struct PipelineConfig {
     /// vez de deixar a mix mais baixa que a faixa original do vídeo.
     #[serde(default = "default_true")]
     pub match_loudness: bool,
+    /// Acima disto (caracteres de tradução por segundo de fala original) a
+    /// frase sairia corrida; tenta-se uma tradução mais curta. As vozes em
+    /// português falam ~14,5 caracteres/s em ritmo normal.
+    #[serde(default = "default_max_chars_per_sec")]
+    pub max_chars_per_sec: f32,
     /// Trechos mais longos que isto são quebrados antes da tradução/TTS.
     #[serde(default = "default_max_segment_secs")]
     pub max_segment_secs: f64,
@@ -192,6 +197,9 @@ fn default_voice_over_music_db() -> f32 {
 }
 fn default_true() -> bool {
     true
+}
+fn default_max_chars_per_sec() -> f32 {
+    16.5
 }
 fn default_max_segment_secs() -> f64 {
     8.0
@@ -217,6 +225,7 @@ impl Default for PipelineConfig {
             overlap_gain: 0.6,
             content: ContentMode::Speech,
             match_loudness: true,
+            max_chars_per_sec: 16.5,
             max_segment_secs: 8.0,
             timing: TimingConfig::default(),
             sample_rate: 44_100,
@@ -505,6 +514,33 @@ impl Pipeline {
                 let mut out = chunk.to_vec();
                 for (s, t) in out.iter_mut().zip(translated) {
                     s.target_text = Some(clean_caption_text(&t));
+                }
+                // Tradução que cabe no tempo: frases que ficariam corridas
+                // ganham uma segunda tradução, mais curta, em vez de só acelerar.
+                let tight: Vec<usize> = out
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| !s.is_singing() && chars_per_sec(s) > cfg.max_chars_per_sec)
+                    .map(|(i, _)| i)
+                    .collect();
+                if !tight.is_empty() {
+                    let srcs: Vec<&str> = tight.iter().map(|&i| chunk[i].source_text.as_str()).collect();
+                    if let Ok(short) = translator.translate_concise(&srcs, &from, &cfg.target_lang) {
+                        let mut swapped = 0;
+                        for (&i, t) in tight.iter().zip(short) {
+                            let t = clean_caption_text(&t);
+                            let old_len = out[i].target_text.as_deref().map(|x| x.chars().count()).unwrap_or(0);
+                            let new_len = t.chars().count();
+                            // Mais curta de verdade, mas não um pedaço truncado.
+                            if new_len * 100 <= old_len * 92 && new_len * 100 >= old_len * 55 {
+                                out[i].target_text = Some(t);
+                                swapped += 1;
+                            }
+                        }
+                        if swapped > 0 {
+                            info!(apertados = tight.len(), encurtados = swapped, "tradução mais curta para caber no tempo");
+                        }
+                    }
                 }
                 done += out.len();
                 if let Some(p) = &progress_t {
@@ -825,6 +861,12 @@ fn estimate_speed(source: &str, target: &str, cfg: &TimingConfig) -> f32 {
     let t = target.chars().count().max(1) as f32;
     let ratio = t / (s * 1.2);
     ratio.clamp(1.0, cfg.max_speed)
+}
+
+/// Caracteres da tradução por segundo de janela do trecho.
+fn chars_per_sec(s: &Segment) -> f32 {
+    let chars = s.target_text.as_deref().map(|t| t.chars().count()).unwrap_or(0) as f32;
+    chars / (s.duration().max(0.2) as f32)
 }
 
 fn db(x: f32) -> f32 {

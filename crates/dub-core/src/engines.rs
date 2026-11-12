@@ -45,6 +45,13 @@ pub trait Translator: Engine {
     /// Traduz em lote — a maioria das engines é muito mais rápida assim.
     /// Deve devolver exatamente `texts.len()` strings, na mesma ordem.
     fn translate(&self, texts: &[&str], from: &Lang, to: &Lang) -> Result<Vec<String>>;
+
+    /// Como `translate`, preferindo a versão mais curta de cada frase — para
+    /// trechos em que a tradução normal não cabe no tempo da fala original.
+    /// Engines sem esse controle devolvem a tradução normal.
+    fn translate_concise(&self, texts: &[&str], from: &Lang, to: &Lang) -> Result<Vec<String>> {
+        self.translate(texts, from, to)
+    }
 }
 
 /// Gera fala a partir de texto.

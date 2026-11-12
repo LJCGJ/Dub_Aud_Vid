@@ -90,6 +90,17 @@ impl Engine for Ct2Translator {
 
 impl Translator for Ct2Translator {
     fn translate(&self, texts: &[&str], _from: &Lang, _to: &Lang) -> Result<Vec<String>> {
+        self.run(texts, 1.0)
+    }
+
+    /// Sem normalização por comprimento a busca prefere hipóteses mais curtas.
+    fn translate_concise(&self, texts: &[&str], _from: &Lang, _to: &Lang) -> Result<Vec<String>> {
+        self.run(texts, 0.0)
+    }
+}
+
+impl Ct2Translator {
+    fn run(&self, texts: &[&str], length_penalty: f32) -> Result<Vec<String>> {
         if texts.is_empty() {
             return Ok(vec![]);
         }
@@ -98,7 +109,8 @@ impl Translator for Ct2Translator {
         let inputs: Vec<&str> = idx.iter().map(|&i| texts[i].trim()).collect();
 
         let opts = ct2rs::TranslationOptions {
-            beam_size: 4,
+            beam_size: if length_penalty < 1.0 { 8 } else { 4 },
+            length_penalty,
             max_decoding_length: 256,
             repetition_penalty: 1.1,
             disable_unk: true,

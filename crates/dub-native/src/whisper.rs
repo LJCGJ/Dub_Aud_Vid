@@ -107,7 +107,16 @@ impl WhisperTranscriber {
         on_progress: Option<Arc<dyn Fn(u8) + Send + Sync>>,
     ) -> Result<Vec<Segment>> {
         let buf = AudioBuffer::read_wav(audio)?;
-        let samples = to_16k(&buf);
+        let full = to_16k(&buf);
+        // O whisper "gruda" a primeira frase no começo de um silêncio longo (num
+        // teste, uma fala que começa aos 5,2 s saiu marcada em 0,0–4,2 s). A
+        // cura padrão é tirar os silêncios antes de transcrever e mapear os
+        // tempos de volta — assim nenhuma palavra pode cair onde não há voz.
+        let condensed = SpeechMap::build(&full, 16_000);
+        let samples = match &condensed {
+            Some(m) => m.samples.clone(),
+            None => full,
+        };
 
         let mut params = FullParams::new(SamplingStrategy::BeamSearch { beam_size: 5, patience: -1.0 });
         params.set_n_threads(self.threads as i32);
@@ -145,6 +154,48 @@ impl WhisperTranscriber {
         })?;
 
         let n = state.full_n_segments().map_err(|e| wf(e.to_string()))?;
+        // Caminho preferido: palavras com tempo próprio, reagrupadas pelas
+        // pausas reais da fala. Os segmentos do whisper cortam no meio de uma
+        // frase e engolem pausas de 1 s — a dublagem saía adiantada num trecho
+        // e atrasada no seguinte.
+        let mut words: Vec<Word> = Vec::new();
+        let eot = self.ctx.token_eot();
+        for i in 0..n {
+            let s0 = state.full_get_segment_t0(i).map_err(|e| wf(e.to_string()))? as f64 / 100.0;
+            let s1 = state.full_get_segment_t1(i).map_err(|e| wf(e.to_string()))? as f64 / 100.0;
+            let seg_text = state.full_get_segment_text_lossy(i).unwrap_or_default();
+            if seg_text.trim().is_empty() || is_noise_marker(seg_text.trim()) {
+                continue;
+            }
+            let nt = state.full_n_tokens(i).unwrap_or(0);
+            for j in 0..nt {
+                let Ok(id) = state.full_get_token_id(i, j) else { continue };
+                if id >= eot {
+                    continue; // marcadores especiais / de tempo
+                }
+                let Ok(text) = state.full_get_token_text_lossy(i, j) else { continue };
+                let Ok(d) = state.full_get_token_data(i, j) else { continue };
+                let t0 = (d.t0 as f64 / 100.0).clamp(s0, s1);
+                let t1 = (d.t1 as f64 / 100.0).clamp(t0, s1);
+                if text.starts_with(' ') || words.is_empty() || words.last().map(|w| w.seg != i).unwrap_or(false) {
+                    words.push(Word { start: t0, end: t1, text: text.trim_start().to_string(), seg: i });
+                } else if let Some(w) = words.last_mut() {
+                    w.text.push_str(&text);
+                    w.end = w.end.max(t1);
+                }
+            }
+        }
+        words.retain(|w| !w.text.trim().is_empty());
+        if let Some(m) = &condensed {
+            for w in &mut words {
+                w.start = m.to_original(w.start);
+                w.end = m.to_original(w.end).max(w.start);
+            }
+        }
+        if words_look_timed(&words) {
+            let _ = &self.ctx;
+            return Ok(merge_tiny(segments_from_words(&words, 0.6, 8.0)));
+        }
         let mut out = Vec::with_capacity(n as usize);
         for i in 0..n {
             let t0 = state.full_get_segment_t0(i).map_err(|e| wf(e.to_string()))? as f64 / 100.0;
@@ -154,7 +205,11 @@ impl WhisperTranscriber {
             if text.is_empty() || is_noise_marker(&text) {
                 continue;
             }
-            out.push(Segment::new(out.len(), t0, t1, text));
+            let (t0, t1) = match &condensed {
+                Some(m) => (m.to_original(t0), m.to_original(t1)),
+                None => (t0, t1),
+            };
+            out.push(Segment::new(out.len(), t0, t1.max(t0 + 0.05), text));
         }
         let _ = &self.ctx;
         Ok(split_long(merge_tiny(out), 6.0))
@@ -192,6 +247,138 @@ fn is_noise_marker(t: &str) -> bool {
 
 /// Junta segmentos muito curtos (< 0,6 s) ao anterior — poucas palavras isoladas
 /// viram dublagens picotadas.
+/// Áudio só com os trechos de voz (silêncios removidos) e o mapa para voltar
+/// aos tempos do áudio original.
+struct SpeechMap {
+    samples: Vec<f32>,
+    /// (início no condensado, início no original, duração), em segundos.
+    pieces: Vec<(f64, f64, f64)>,
+}
+
+impl SpeechMap {
+    /// `None` quando não vale a pena: sem silêncio relevante (menos de 10% do
+    /// áudio) ou sem voz detectável — aí o áudio segue inteiro.
+    fn build(x: &[f32], sr: usize) -> Option<SpeechMap> {
+        let frame = sr / 50; // 20 ms
+        if frame == 0 || x.len() < frame * 50 {
+            return None;
+        }
+        let rms: Vec<f32> = x.chunks(frame).map(|c| (c.iter().map(|v| v * v).sum::<f32>() / c.len() as f32).sqrt()).collect();
+        let mut sorted = rms.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let p95 = sorted[(sorted.len() * 95 / 100).min(sorted.len() - 1)];
+        let thr = (p95 * 0.12).max(0.004);
+        // Regiões com voz, juntando pausas curtas (< 0,3 s) e descartando estalos (< 0,1 s).
+        let mut regions: Vec<(usize, usize)> = Vec::new();
+        let mut start: Option<usize> = None;
+        let mut silent = 0usize;
+        for (i, v) in rms.iter().enumerate() {
+            if *v > thr {
+                if start.is_none() {
+                    start = Some(i);
+                }
+                silent = 0;
+            } else if let Some(s0) = start {
+                silent += 1;
+                if silent >= 15 {
+                    regions.push((s0, i + 1 - silent));
+                    start = None;
+                }
+            }
+        }
+        if let Some(s0) = start {
+            regions.push((s0, rms.len()));
+        }
+        regions.retain(|(a, b)| b - a >= 5);
+        if regions.is_empty() {
+            return None;
+        }
+        // Folga de 0,15 s em cada ponta, sem sobrepor a região vizinha.
+        let pad = 8usize;
+        let n = rms.len();
+        let mut padded: Vec<(usize, usize)> = Vec::with_capacity(regions.len());
+        for (k, (a, b)) in regions.iter().enumerate() {
+            let lo = if k == 0 { 0 } else { (regions[k - 1].1 + a) / 2 };
+            let hi = if k + 1 == regions.len() { n } else { (b + regions[k + 1].0) / 2 };
+            padded.push((a.saturating_sub(pad).max(lo), (b + pad).min(hi)));
+        }
+        let kept: usize = padded.iter().map(|(a, b)| b - a).sum();
+        if kept * 10 > n * 9 {
+            return None;
+        }
+        let mut samples = Vec::with_capacity(kept * frame);
+        let mut pieces = Vec::with_capacity(padded.len());
+        for (a, b) in padded {
+            let (sa, sb) = (a * frame, (b * frame).min(x.len()));
+            pieces.push((samples.len() as f64 / sr as f64, sa as f64 / sr as f64, (sb - sa) as f64 / sr as f64));
+            samples.extend_from_slice(&x[sa..sb]);
+        }
+        Some(SpeechMap { samples, pieces })
+    }
+
+    /// Tempo no áudio condensado → tempo no áudio original.
+    fn to_original(&self, t: f64) -> f64 {
+        let mut last = self.pieces[0];
+        for p in &self.pieces {
+            if t < p.0 {
+                break;
+            }
+            last = *p;
+        }
+        last.1 + (t - last.0).clamp(0.0, last.2)
+    }
+}
+
+/// Uma palavra reconhecida, com o tempo que o whisper atribuiu a ela.
+#[derive(Debug, Clone)]
+struct Word {
+    start: f64,
+    end: f64,
+    text: String,
+    seg: i32,
+}
+
+/// Os tempos por palavra só servem se avançam: com áudio ruim o whisper às
+/// vezes devolve todas as palavras de um segmento no mesmo instante.
+fn words_look_timed(words: &[Word]) -> bool {
+    if words.len() < 2 {
+        return false;
+    }
+    let advancing = words.windows(2).filter(|w| w[1].start > w[0].start + 0.01).count();
+    advancing * 10 >= (words.len() - 1) * 6
+}
+
+/// Reagrupa palavras em trechos: corta em pausas de `gap` segundos ou mais,
+/// no fim de frase (. ! ? …) e, passando de `max_secs`, na próxima vírgula.
+fn segments_from_words(words: &[Word], gap: f64, max_secs: f64) -> Vec<Segment> {
+    let ends_sentence = |t: &str| matches!(t.trim_end_matches(['"', '\'', ')', '”']).chars().last(), Some('.' | '!' | '?' | '…'));
+    let ends_clause = |t: &str| matches!(t.chars().last(), Some(',' | ';' | ':' | '—'));
+    let mut out: Vec<Segment> = Vec::new();
+    let mut cur: Vec<&Word> = Vec::new();
+    let flush = |cur: &mut Vec<&Word>, out: &mut Vec<Segment>| {
+        if let (Some(first), Some(last)) = (cur.first(), cur.last()) {
+            let text = cur.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ");
+            out.push(Segment::new(out.len(), first.start, last.end.max(first.start + 0.05), text));
+        }
+        cur.clear();
+    };
+    for w in words {
+        if let Some(prev) = cur.last() {
+            let dur = prev.end - cur[0].start;
+            let cut = w.start - prev.end >= gap
+                || ends_sentence(&prev.text)
+                || (dur >= max_secs && ends_clause(&prev.text))
+                || dur >= max_secs * 1.5;
+            if cut {
+                flush(&mut cur, &mut out);
+            }
+        }
+        cur.push(w);
+    }
+    flush(&mut cur, &mut out);
+    out
+}
+
 fn merge_tiny(segs: Vec<Segment>) -> Vec<Segment> {
     let mut out: Vec<Segment> = Vec::with_capacity(segs.len());
     for s in segs {
@@ -310,6 +497,55 @@ fn resolve_model(model: &str) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn speech_map_removes_silence_and_maps_back() {
+        let sr = 16_000usize;
+        let mut x = vec![0.0f32; sr * 12];
+        let mut seed = 3u32;
+        let mut noise = |a: usize, b: usize, x: &mut Vec<f32>| {
+            for v in x.iter_mut().take(b * sr / 10).skip(a * sr / 10) {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                *v = ((seed >> 9) as f32 / (1u32 << 23) as f32 - 1.0) * 0.2;
+            }
+        };
+        noise(52, 80, &mut x); // voz de 5,2 a 8,0 s
+        noise(100, 115, &mut x); // e de 10,0 a 11,5 s
+        let m = SpeechMap::build(&x, sr).expect("há silêncio para remover");
+        let dur = m.samples.len() as f64 / sr as f64;
+        assert!(dur < 5.5, "condensado tem {dur}s");
+        // O começo do condensado é o começo da primeira fala (com a folga).
+        assert!((m.to_original(0.2) - 5.25).abs() < 0.2, "{}", m.to_original(0.2));
+        // Um instante dentro da segunda região volta para depois de 10 s.
+        let t2 = m.pieces[1].0 + 0.5;
+        assert!(m.to_original(t2) > 9.8 && m.to_original(t2) < 11.6);
+        // Áudio sem silêncio: não condensa.
+        let mut y = vec![0.0f32; sr * 5];
+        noise(0, 50, &mut y);
+        assert!(SpeechMap::build(&y, sr).is_none());
+    }
+
+    #[test]
+    fn words_regroup_on_pauses_and_sentences() {
+        let w = |a: f64, b: f64, t: &str| Word { start: a, end: b, text: t.into(), seg: 0 };
+        let words = vec![
+            w(0.0, 0.3, "Old"),
+            w(0.3, 0.7, "tales,"),
+            w(0.7, 1.0, "told"),
+            w(2.0, 2.4, "again."), // pausa de 1 s antes
+            w(2.5, 2.9, "New"),
+            w(2.9, 3.3, "start."),
+        ];
+        assert!(words_look_timed(&words));
+        let segs = segments_from_words(&words, 0.6, 8.0);
+        assert_eq!(segs.len(), 3);
+        assert_eq!(segs[0].source_text, "Old tales, told");
+        assert!((segs[1].start - 2.0).abs() < 1e-6);
+        assert_eq!(segs[2].source_text, "New start.");
+        // Tempos todos iguais: não confia.
+        let flat: Vec<Word> = (0..5).map(|_| w(1.0, 1.0, "x")).collect();
+        assert!(!words_look_timed(&flat));
+    }
 
     #[test]
     fn noise_markers() {
