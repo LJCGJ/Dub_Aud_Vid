@@ -34,7 +34,7 @@ class MockEngine:
         i = 0
         while t < total:
             end = min(t + 1.6, total)
-            segs.append({"start": round(t, 3), "end": round(end, 3), "text": f"mock sentence number {i}"})
+            segs.append({"start": round(t, 3), "end": round(end, 3), "text": f"Mock sentence number {i}."})
             t += 2.0
             i += 1
         return {"segments": segs}
