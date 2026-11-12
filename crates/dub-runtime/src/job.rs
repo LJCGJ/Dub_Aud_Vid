@@ -71,7 +71,7 @@ impl Default for JobRequest {
             background_gain: 0.9,
             max_speed: 1.35,
             ffmpeg_stretch: false,
-            content: dub_core::ContentMode::Auto,
+            content: dub_core::ContentMode::Speech,
             subtitles: None,
             online_subtitles: true,
         }

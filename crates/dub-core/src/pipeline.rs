@@ -95,10 +95,10 @@ impl Stretcher for NaiveStretcher {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ContentMode {
-    /// Decide por trecho, pela relação música/voz.
-    #[default]
+    /// Decide por trecho: mantém o canto original e dubla a fala.
     Auto,
-    /// Tudo é fala: dubla todos os trechos (comportamento antigo).
+    /// Dubla todos os trechos, inclusive canto (padrão).
+    #[default]
     Speech,
     /// É música: mantém o canto original e dubla só o que for claramente falado.
     Music,
@@ -215,7 +215,7 @@ impl Default for PipelineConfig {
             voice_over_music_db: default_voice_over_music_db(),
             voice_polish: true,
             overlap_gain: 0.6,
-            content: ContentMode::Auto,
+            content: ContentMode::Speech,
             match_loudness: true,
             max_segment_secs: 8.0,
             timing: TimingConfig::default(),
@@ -553,6 +553,8 @@ impl Pipeline {
                         let speed_hint = if pass_speed { estimate_speed(&seg.source_text, &text, &cfg_s.timing) } else { 1.0 };
                         let mut audio =
                             synthesizer.synthesize_segment(&seg, &text, &cfg_s.target_lang, ref_path.as_deref(), speed_hint)?;
+                        // Silêncio no começo do áudio do TTS vira atraso em relação à fala original.
+                        audio.trim_silence(0.01, 0.02);
                         if cfg_s.match_voice {
                             match_voice(&mut audio, &seg, stretcher_s.as_ref())?;
                         }
@@ -952,41 +954,56 @@ pub fn snap_to_voice(segments: &mut [Segment], voice: &AudioBuffer) -> usize {
     moved
 }
 
-/// Agrupa trechos em "falantes" pelo tom: ordena os f0 e corta onde dois
-/// vizinhos distam mais de 20%. Trechos sem f0 vão para o grupo mais próximo
-/// no tempo. Só roda quando não há diarização.
+/// Sem diarização, cria no máximo dois "falantes": voz masculina e voz
+/// feminina. Agrupar por faixas de tom mais finas fazia um único personagem
+/// (um narrador que sobe e desce o tom) sair com duas vozes diferentes.
+/// O gênero minoritário só vira um falante próprio se tiver pelo menos 3
+/// trechos e 20% do tempo com tom medido; abaixo disso é ruído de medição
+/// (música por baixo, grito, sussurro) e tudo fica com a voz majoritária.
 fn cluster_by_pitch(segments: &mut [Segment], f0s: &[Option<f32>]) {
-    let mut known: Vec<(usize, f32)> = f0s.iter().enumerate().filter_map(|(i, f)| f.map(|v| (i, v))).collect();
-    if known.len() < 2 {
-        for s in segments.iter_mut() {
-            s.speaker = Some(Speaker("voz-1".into()));
+    let mut dur = [0.0f64; 2]; // [masc, fem]
+    let mut count = [0usize; 2];
+    for (s, f) in segments.iter().zip(f0s) {
+        if let Some(f) = f {
+            let k = if crate::Gender::from_f0(*f) == crate::Gender::Female { 1 } else { 0 };
+            dur[k] += s.duration();
+            count[k] += 1;
         }
-        return;
     }
-    known.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-    let mut cluster_of = vec![0usize; segments.len()];
-    let mut c = 0usize;
-    let mut assigned = vec![false; segments.len()];
-    cluster_of[known[0].0] = 0;
-    assigned[known[0].0] = true;
-    for w in known.windows(2) {
-        if w[1].1 / w[0].1 > 1.2 {
-            c += 1;
-        }
-        cluster_of[w[1].0] = c;
-        assigned[w[1].0] = true;
-    }
-    // Sem f0: herda do trecho anterior (ou do próximo).
-    let mut last = cluster_of[known[0].0];
-    for i in 0..segments.len() {
-        if assigned[i] {
-            last = cluster_of[i];
+    let total = (dur[0] + dur[1]).max(1e-6);
+    let major = if dur[1] > dur[0] { 1 } else { 0 };
+    let minor = 1 - major;
+    // Além disso os dois grupos precisam ser mesmo duas vozes: um narrador em
+    // torno de 155 Hz fica metade de cada lado do corte de 165 Hz, mas as
+    // medianas dos dois lados ficam coladas. Homem e mulher distam ≥ 30%.
+    let median_of = |k: usize| -> f32 {
+        let mut v: Vec<f32> =
+            f0s.iter().flatten().copied().filter(|f| (crate::Gender::from_f0(*f) == crate::Gender::Female) == (k == 1)).collect();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        if v.is_empty() {
+            0.0
         } else {
-            cluster_of[i] = last;
+            v[v.len() / 2]
         }
-    }
-    for (s, k) in segments.iter_mut().zip(&cluster_of) {
-        s.speaker = Some(Speaker(format!("voz-{}", k + 1)));
+    };
+    let apart = median_of(0) > 0.0 && median_of(1) / median_of(0) >= 1.3;
+    let two_voices = count[minor] >= 3 && dur[minor] / total >= 0.2 && apart;
+    let name = |k: usize| if k == 1 { "voz-feminina" } else { "voz-masculina" };
+    let mut last = major;
+    for (s, f) in segments.iter_mut().zip(f0s) {
+        let k = match f {
+            Some(f) if two_voices => {
+                if crate::Gender::from_f0(*f) == crate::Gender::Female {
+                    1
+                } else {
+                    0
+                }
+            }
+            Some(_) => major,
+            None => last,
+        };
+        last = k;
+        s.speaker = Some(Speaker(name(k).into()));
     }
 }
 
@@ -1021,9 +1038,7 @@ pub fn estimate_genders(segments: &mut [Segment], voice: &AudioBuffer) {
         s.brightness = piece.brightness();
         per_seg.push(f0);
     }
-    // Sem diarização, agrupa os trechos por faixa de tom: vozes diferentes
-    // costumam ficar a mais de ~20% uma da outra. Dá "falantes" aproximados
-    // para a voz da dublagem não ser a mesma para todo mundo.
+    // Sem diarização: no máximo uma voz masculina e uma feminina.
     if segments.iter().all(|s| s.speaker.is_none()) {
         cluster_by_pitch(segments, &per_seg);
     }
@@ -1181,6 +1196,23 @@ mod tests {
         let loud_bg = tone(8.0, 0.4);
         let mut segs4 = vec![Segment::new(0, 0.0, 4.0, "dialogue over score"), Segment::new(1, 4.0, 8.0, "more dialogue")];
         assert_eq!(classify_singing(&mut segs4, &spoken, &loud_bg, ContentMode::Auto), 0);
+    }
+
+    #[test]
+    fn one_speaker_near_the_gender_cutoff_keeps_one_voice() {
+        let mk =
+            |n: usize| (0..n).map(|i| Segment::new(i, i as f64 * 2.0, i as f64 * 2.0 + 2.0, "line here")).collect::<Vec<_>>();
+        // Um narrador oscilando em torno de 155 Hz: uma voz só.
+        let mut segs = mk(8);
+        let f0s: Vec<Option<f32>> = [122.0, 167.0, 137.0, 168.0, 167.0, 154.0, 171.0, 152.0].iter().map(|f| Some(*f)).collect();
+        cluster_by_pitch(&mut segs, &f0s);
+        assert!(segs.iter().all(|s| s.speaker == segs[0].speaker));
+        // Homem e mulher de verdade: duas vozes.
+        let mut segs = mk(8);
+        let f0s: Vec<Option<f32>> = [115.0, 120.0, 210.0, 118.0, 220.0, 205.0, 122.0, 215.0].iter().map(|f| Some(*f)).collect();
+        cluster_by_pitch(&mut segs, &f0s);
+        assert_ne!(segs[0].speaker, segs[2].speaker);
+        assert_eq!(segs[2].speaker, segs[4].speaker);
     }
 
     #[test]
@@ -1359,6 +1391,7 @@ mod tests {
                 align_to_voice: false,
                 max_segment_secs: 3.0,
                 match_loudness,
+                content: ContentMode::Auto,
                 ..Default::default()
             };
             Pipeline::new(engines, cfg).run(&DubJob { audio: src.clone(), audio_hq: None, work_dir: dir.clone() }, None).unwrap()

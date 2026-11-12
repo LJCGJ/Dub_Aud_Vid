@@ -56,7 +56,7 @@ impl Default for Settings {
             embed_subtitles: true,
             background_gain: 0.9,
             max_speed: 1.35,
-            content: dub_core::ContentMode::Auto,
+            content: dub_core::ContentMode::Speech,
             online_subtitles: true,
             force_cpu: false,
             performance: dub_core::Performance::Balanced,

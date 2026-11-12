@@ -114,9 +114,10 @@ struct VideoArgs {
     /// Velocidade máxima da fala dublada para caber no tempo
     #[arg(long, default_value_t = 1.35)]
     max_speed: f32,
-    /// Tipo de conteúdo: auto (decide por trecho), speech (dubla tudo) ou
-    /// music (mantém o canto original e dubla só a fala; tradução na legenda)
-    #[arg(long, default_value = "auto")]
+    /// Tipo de conteúdo: speech (dubla tudo, inclusive canto — padrão), auto
+    /// (mantém o canto original e dubla a fala) ou music (mantém o canto e
+    /// dubla só fala a seco; tradução na legenda)
+    #[arg(long, default_value = "speech")]
     content: dub_core::ContentMode,
     /// Legenda SRT/VTT no idioma original, no lugar da transcrição por áudio
     #[arg(long)]

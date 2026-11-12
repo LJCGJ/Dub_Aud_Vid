@@ -165,6 +165,25 @@ impl AudioBuffer {
         AudioBuffer::new(target_sr, out)
     }
 
+    /// Corta o silêncio do começo e do fim (abaixo de `threshold` de pico em
+    /// janelas de 10 ms), deixando `keep` segundos de folga em cada ponta.
+    pub fn trim_silence(&mut self, threshold: f32, keep: f64) {
+        let win = (self.sample_rate as usize / 100).max(1);
+        let n = self.samples.len();
+        if n < win * 4 {
+            return;
+        }
+        let loud = |i: usize| self.samples[i..(i + win).min(n)].iter().any(|v| v.abs() > threshold);
+        let Some(first) = (0..n).step_by(win).find(|&i| loud(i)) else { return };
+        let last = (0..n).step_by(win).rev().find(|&i| loud(i)).unwrap_or(first);
+        let pad = (keep * self.sample_rate as f64) as usize;
+        let a = first.saturating_sub(pad);
+        let b = (last + win + pad).min(n);
+        if a > 0 || b < n {
+            self.samples = self.samples[a..b].to_vec();
+        }
+    }
+
     /// Trilha de tom: f0 (Hz) a cada 16 ms, 0.0 onde não há voz (YIN, janela
     /// de 32 ms, 70–500 Hz).
     pub fn f0_track(&self) -> Vec<f32> {
@@ -712,6 +731,19 @@ mod tests {
         assert_eq!(crate::Gender::from_f0(m), crate::Gender::Male);
         assert_eq!(crate::Gender::from_f0(f), crate::Gender::Female);
         assert!(AudioBuffer::silence(sr, 1.0).median_f0().is_none());
+    }
+
+    #[test]
+    fn trim_silence_removes_edges() {
+        let sr = 16_000u32;
+        let mut x = vec![0.0f32; sr as usize];
+        for v in x.iter_mut().take(12_000).skip(4_000) {
+            *v = 0.5;
+        }
+        let mut a = AudioBuffer::new(sr, x);
+        a.trim_silence(0.01, 0.02);
+        assert!((a.duration() - 0.54).abs() < 0.03, "{}", a.duration());
+        assert!(a.samples[400].abs() > 0.4);
     }
 
     #[test]

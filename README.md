@@ -182,7 +182,7 @@ dub video <arquivo|url> [opções]
   --no-subtitles           não embutir SRT
   --background-gain 0.9    volume do fundo
   --max-speed 1.35         aceleração máxima da fala
-  --content auto           auto | speech | music (o que fazer com trechos cantados)
+  --content speech         speech (dubla tudo) | auto (mantém o canto) | music (só legenda na música)
   --subs legenda.srt       legenda SRT/VTT no idioma original, no lugar do whisper
   --no-online-subs         não buscar a legenda do próprio vídeo no YouTube
   --voice auto             auto (♂/♀ por trecho) | pt_BR-faber-medium… (Piper) | pf_dora, pm_alex, pm_santa (Kokoro)
@@ -226,15 +226,18 @@ música alta. O modelo faz parte do conjunto padrão (`dub models download`,
 com `--no-separate`, o original inteiro entra como fundo e é abaixado só
 enquanto a voz dublada fala.
 
-**Música e clipes (`--content auto`, padrão):** canto lido por voz sintética
-vira um narrador falando por cima da cantora — não tem como soar bem. Com a
-voz e o instrumental separados, o pipeline mede, trecho a trecho, se a música
-está tão alta quanto a voz; quando o vídeo é majoritariamente assim, esses
-trechos são tratados como **canto**: a voz original volta na mix, a tradução
-vai só para a legenda, e só o que for fala a seco (introdução, diálogo no meio
-do clipe) é dublado. `--content speech` dubla tudo como antes; `--content music`
-força o modo música (útil quando a detecção erra). O resumo no fim informa
-quantos trechos foram tratados como canto.
+**Música e clipes (`--content`):** o padrão, `speech`, dubla tudo — fala e
+canto recebem a voz em português por cima do instrumental (o canto sai falado
+no ritmo da letra, não cantado). `--content auto` mantém o cantor: com a voz e
+o instrumental separados, o vídeo é tratado como musical quando a própria voz
+canta (notas sustentadas) e a música está alta; nesses trechos a voz original
+volta na mix e a tradução vai só para a legenda. Trilha alta sob diálogo (jogo,
+filme) não conta como canto. `--content music` força esse modo. O resumo no
+fim informa quantos trechos foram tratados como canto.
+
+**Sem diarização, no máximo duas vozes:** uma masculina e uma feminina, e a
+segunda só aparece se tiver ao menos 3 trechos e 20% do tempo — um único
+personagem não troca de voz no meio do vídeo.
 
 **Legenda do próprio vídeo:** para links do YouTube, o Dub tenta antes a
 legenda do vídeo no idioma original (a enviada pelo autor e, se não houver, a

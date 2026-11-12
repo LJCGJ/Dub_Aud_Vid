@@ -389,7 +389,7 @@ function fillSettingsForm() {
   $("#s-open-done").checked = settings.open_when_done;
   $("#s-bg").value = settings.background_gain;
   $("#s-speed").value = settings.max_speed;
-  $("#s-content").value = settings.content || "auto";
+  $("#s-content").value = settings.content || "speech";
   $("#s-online-subs").checked = settings.online_subtitles !== false;
   $("#s-from").value = settings.source_lang ?? "en";
   $("#s-to").value = settings.target_lang;

@@ -132,9 +132,9 @@ pub fn run(initial_source: Option<String>) -> Result<Choices> {
 
     // 5b. Tipo de conteúdo ----------------------------------------------------------
     let content_items: Vec<(dub_core::ContentMode, String)> = vec![
-        (dub_core::ContentMode::Auto, "Automático (recomendado) — detecta canto e mantém a voz original nele".into()),
-        (dub_core::ContentMode::Speech, "Fala — dubla todos os trechos (entrevista, aula, gameplay)".into()),
-        (dub_core::ContentMode::Music, "Música — mantém o canto, dubla só a fala; tradução vai na legenda".into()),
+        (dub_core::ContentMode::Speech, "Dublar tudo (recomendado) — fala e canto recebem a voz em português".into()),
+        (dub_core::ContentMode::Auto, "Manter o canto — detecta canto e deixa a voz original nele; dubla a fala".into()),
+        (dub_core::ContentMode::Music, "Só legenda na música — mantém o canto, dubla só fala a seco".into()),
     ];
     let content = pick(&theme, "Tipo de conteúdo", &content_items, 0)?;
 
