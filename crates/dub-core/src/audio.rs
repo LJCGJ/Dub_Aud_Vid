@@ -165,6 +165,85 @@ impl AudioBuffer {
         AudioBuffer::new(target_sr, out)
     }
 
+    /// Trilha de tom: f0 (Hz) a cada 16 ms, 0.0 onde não há voz (YIN, janela
+    /// de 32 ms, 70–500 Hz).
+    pub fn f0_track(&self) -> Vec<f32> {
+        let sr = self.sample_rate as f32;
+        let w = (sr * 0.032) as usize;
+        let hop = ((sr * 0.016) as usize).max(1);
+        let tau_min = ((sr / 500.0) as usize).max(1);
+        let tau_max = (sr / 70.0) as usize;
+        let mut out = Vec::new();
+        if w == 0 || self.samples.len() < w + tau_max + 1 {
+            return out;
+        }
+        let mut i = 0;
+        while i + w + tau_max < self.samples.len() {
+            let x = &self.samples[i..i + w + tau_max];
+            i += hop;
+            let rms = (x[..w].iter().map(|v| v * v).sum::<f32>() / w as f32).sqrt();
+            if rms < 0.015 {
+                out.push(0.0);
+                continue;
+            }
+            let mut cum = 0.0f32;
+            let mut found = 0.0f32;
+            for tau in 1..=tau_max {
+                let mut acc = 0.0f32;
+                for k in 0..w {
+                    let d = x[k] - x[k + tau];
+                    acc += d * d;
+                }
+                cum += acc;
+                let dp = if cum > 0.0 { acc * tau as f32 / cum } else { 1.0 };
+                if tau >= tau_min && dp < 0.15 {
+                    found = sr / tau as f32;
+                    break;
+                }
+            }
+            out.push(found);
+        }
+        out
+    }
+
+    /// Fração dos quadros com voz que pertencem a "notas sustentadas": trechos
+    /// de pelo menos ~190 ms em que o tom fica dentro de 1 semitom. Canto tem
+    /// muitas; fala (narração, diálogo de jogo) quase nenhuma. Medido em voz
+    /// isolada: canto ≈ 0,2 na mediana por trecho, fala ≈ 0,0.
+    pub fn sustained_ratio(&self) -> Option<f32> {
+        let f = self.f0_track();
+        let voiced = f.iter().filter(|v| **v > 0.0).count();
+        if voiced < 8 {
+            return None;
+        }
+        let st: Vec<f32> = f.iter().map(|v| if *v > 0.0 { 12.0 * (v / 100.0).log2() } else { f32::NAN }).collect();
+        let n = st.len();
+        let mut steady = 0usize;
+        let mut i = 0;
+        while i < n {
+            if st[i].is_nan() {
+                i += 1;
+                continue;
+            }
+            let (mut lo, mut hi) = (st[i], st[i]);
+            let mut j = i;
+            while j + 1 < n && !st[j + 1].is_nan() && (st[j + 1] - st[j]).abs() < 0.35 {
+                let (nlo, nhi) = (lo.min(st[j + 1]), hi.max(st[j + 1]));
+                if nhi - nlo >= 1.0 {
+                    break;
+                }
+                lo = nlo;
+                hi = nhi;
+                j += 1;
+            }
+            if j - i + 1 >= 12 {
+                steady += j - i + 1;
+            }
+            i = j + 1;
+        }
+        Some(steady as f32 / voiced as f32)
+    }
+
     /// Frequência fundamental mediana (Hz) dos quadros com voz, pelo método
     /// YIN (diferença normalizada cumulativa, limiar 0,15 — evita o erro de
     /// oitava da autocorrelação simples). `None` se não há quadros vozeados o

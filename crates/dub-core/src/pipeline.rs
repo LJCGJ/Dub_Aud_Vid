@@ -864,6 +864,21 @@ pub fn classify_singing(segments: &mut [Segment], voice: &AudioBuffer, backgroun
             debug!(fracao = musical / total, "vídeo tratado como fala");
             return 0;
         }
+        // Música alta não basta: em jogo e filme a trilha e os efeitos cobrem o
+        // diálogo o tempo todo. Só é "vídeo musical" se a própria voz canta —
+        // notas sustentadas em boa parte do tempo com voz.
+        let sung: f64 = segments
+            .iter()
+            .filter(|s| voice.slice_seconds(s.start, s.end).sustained_ratio().map(|r| r >= 0.12).unwrap_or(false))
+            .map(Segment::duration)
+            .sum();
+        if sung / total < 0.35 {
+            info!(
+                fracao_cantada = format!("{:.2}", sung / total),
+                "fundo alto, mas a voz é falada (jogo/filme): todos os trechos serão dublados"
+            );
+            return 0;
+        }
     }
     let mut n = 0;
     for (s, r) in segments.iter_mut().zip(&ratios) {
@@ -1151,6 +1166,21 @@ mod tests {
             *v = 0.3;
         }
         assert_eq!(classify_singing(&mut segs3, &voice, &bg3, ContentMode::Auto), 0);
+        // Fundo alto o tempo todo, mas voz falada (tom sempre mudando): é jogo/filme, não música.
+        let glide: Vec<f32> = {
+            let mut phase = 0.0f32;
+            (0..sr as usize * 8)
+                .map(|i| {
+                    let f = 120.0 + 80.0 * ((i as f32 / sr as f32) * 9.0).sin();
+                    phase += 2.0 * std::f32::consts::PI * f / sr as f32;
+                    phase.sin() * 0.3
+                })
+                .collect()
+        };
+        let spoken = AudioBuffer::new(sr, glide);
+        let loud_bg = tone(8.0, 0.4);
+        let mut segs4 = vec![Segment::new(0, 0.0, 4.0, "dialogue over score"), Segment::new(1, 4.0, 8.0, "more dialogue")];
+        assert_eq!(classify_singing(&mut segs4, &spoken, &loud_bg, ContentMode::Auto), 0);
     }
 
     #[test]
